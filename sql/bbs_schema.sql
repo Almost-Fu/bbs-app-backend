@@ -19,6 +19,8 @@ CREATE DATABASE IF NOT EXISTS `bbs_app`
 USE `bbs_app`;
 
 -- 先删后建（顺序：先删引用方，再删被引用方）
+DROP TABLE IF EXISTS `notify_read`;
+DROP TABLE IF EXISTS `footprints`;
 DROP TABLE IF EXISTS `likes`;
 DROP TABLE IF EXISTS `favorites`;
 DROP TABLE IF EXISTS `follows`;
@@ -169,6 +171,34 @@ CREATE TABLE `follows` (
   CONSTRAINT `fk_follows_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_follows_bar`  FOREIGN KEY (`bar_id`)  REFERENCES `bars` (`id`)  ON DELETE CASCADE
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '贴吧关注表';
+
+-- -----------------------------------------------------------------------------
+-- 9. 足迹表（App 进吧页的「足迹」：谁进过哪个吧、最近一次浏览时间）
+--    说明：后端启动时也会用 CREATE TABLE IF NOT EXISTS 自动补建，这里保持一致，
+--          便于「一键重建数据库」时结构完整。
+-- -----------------------------------------------------------------------------
+CREATE TABLE `footprints` (
+  `id`        BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `user_id`   BIGINT UNSIGNED NOT NULL                COMMENT '用户ID',
+  `bar_id`    BIGINT UNSIGNED NOT NULL                COMMENT '浏览过的贴吧ID',
+  `viewed_at` DATETIME(6)     NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '最近一次浏览时间（微秒精度，保证同秒内的先后顺序正确）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_footprints_user_bar` (`user_id`, `bar_id`),
+  KEY `idx_footprints_user_time` (`user_id`, `viewed_at`),
+  CONSTRAINT `fk_footprints_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_footprints_bar`  FOREIGN KEY (`bar_id`)  REFERENCES `bars`  (`id`) ON DELETE CASCADE
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '足迹（进过的吧）';
+
+-- -----------------------------------------------------------------------------
+-- 10. 互动消息已读位置（点赞 / 回复 / @我 三种消息的未读数依赖它）
+--     消息本身不建表：由 likes / comments 现算，保证与帖子数据永远一致。
+-- -----------------------------------------------------------------------------
+CREATE TABLE `notify_read` (
+  `user_id` BIGINT UNSIGNED NOT NULL COMMENT '用户ID',
+  `read_at` DATETIME(6)     NOT NULL COMMENT '互动消息已读时间（微秒精度）',
+  PRIMARY KEY (`user_id`),
+  CONSTRAINT `fk_notify_read_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '互动消息已读位置';
 
 SET FOREIGN_KEY_CHECKS = 1;
 

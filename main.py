@@ -542,6 +542,7 @@ async def lifespan(app: FastAPI):
         query_value("SELECT 1 AS ok")
         print("[bbs-app] MySQL 连接正常，启动自检通过")
     except Exception as exc:  # noqa: BLE001 —— 启动阶段只需提示，不抛出
+        db_ok = False
         print(f"[bbs-app] 警告：数据库暂不可用（{exc}）")
         if IS_PRODUCTION:
             print(
@@ -550,6 +551,14 @@ async def lifespan(app: FastAPI):
             )
         else:
             print("[bbs-app] 请先在 MySQL 执行 sql/bbs_schema.sql，再检查 .env 里的 DB_* 配置")
+    else:
+        db_ok = True
+    if db_ok:
+        # 自动补表 + 补演示数据（幂等：只新增，绝不重建或删除，见第 16 节）
+        try:
+            print(f"[bbs-app] {ensure_app_tables_and_seed()}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[bbs-app] 警告：自动补表 / 补演示数据失败（{exc}）")
     yield
 
 
@@ -636,6 +645,12 @@ class LoginIn(BaseModel):
 class CommentIn(BaseModel):
     text: str = Field(..., min_length=1, max_length=1000, description="评论内容（前端字段名 text）")
     parentId: Optional[int] = Field(None, description="父评论ID，二级回复用，可空")
+
+
+class ProfileIn(BaseModel):
+    """修改自己的资料（昵称 / 头像）：两项都可选，但不能都不传"""
+    nickname: Optional[str] = Field(None, min_length=1, max_length=20, description="昵称")
+    avatar: Optional[str] = Field(None, min_length=1, max_length=255, description="头像 emoji 或图片地址")
 
 
 class BarIn(BaseModel):
@@ -1800,7 +1815,422 @@ def delete_comment(comment_id: int, admin: dict = Depends(require_admin)):
 
 
 # =============================================================================
-# 16. 启动入口
+# 16. 数据收口：App 端「会变化的数据」全部由数据库提供
+#     背景：早期前端用本地 Storage 模拟后端（utils/store.js 里的种子常量），
+#           同一份数据存在两个来源。下面这批「表 + 接口」让数据只剩数据库一个来源。
+#     表（启动时自动补建，幂等：只新增，绝不重建或删除任何已有表）：
+#       · footprints  足迹：谁进过哪个吧、最近一次浏览时间
+#       · notify_read 互动消息已读位置（存在服务器端 → 换设备也一致）
+#     接口：
+#       · POST /api/bars/{id}/visit                 记录足迹（进吧 / 看帖时调用）
+#       · GET  /api/users/me/footprints             我的足迹（角标 = 上次浏览后该吧新增帖数）
+#       · POST /api/posts/{id}/forward              转发（转发数 +1）
+#       · PATCH /api/users/me                       改自己的昵称 / 头像
+#       · GET  /api/users/me/notifications          互动消息（点赞 / 回复 / @我）
+#       · GET  /api/users/me/notifications/unread   未读数（tab-bar 角标）
+#       · POST /api/users/me/notifications/read     标记已读（角标清零）
+# =============================================================================
+
+FOOTPRINTS_DDL = """
+CREATE TABLE IF NOT EXISTS `footprints` (
+  `id`        BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `user_id`   BIGINT UNSIGNED NOT NULL                COMMENT '用户ID',
+  `bar_id`    BIGINT UNSIGNED NOT NULL                COMMENT '浏览过的贴吧ID',
+  `viewed_at` DATETIME(6)     NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '最近一次浏览时间（微秒精度，保证同秒内的先后顺序正确）',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_footprints_user_bar` (`user_id`, `bar_id`),
+  KEY `idx_footprints_user_time` (`user_id`, `viewed_at`),
+  CONSTRAINT `fk_footprints_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `fk_footprints_bar`  FOREIGN KEY (`bar_id`)  REFERENCES `bars`  (`id`) ON DELETE CASCADE
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '足迹（进过的吧）'
+"""
+
+NOTIFY_READ_DDL = """
+CREATE TABLE IF NOT EXISTS `notify_read` (
+  `user_id` BIGINT UNSIGNED NOT NULL COMMENT '用户ID',
+  `read_at` DATETIME(6)     NOT NULL COMMENT '互动消息已读时间（微秒精度）',
+  PRIMARY KEY (`user_id`),
+  CONSTRAINT `fk_notify_read_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '互动消息已读位置'
+"""
+
+# ---- 只在前端本地存在过的演示内容：按"自然键"补进数据库（幂等，可反复执行）----
+#   与前端 utils/store.js 的 DEFAULT_POSTS 第 6/7/8 条一一对应：标题 / 正文 / 标签 / 作者 / 图片一致
+#   前端把 likes 数字当热度展示，这里沿用同一映射：前端的 likes 数值 → view_count
+DEMO_EXTRA_USERS = [
+    ("coder", "代码搬运工", "👧"),
+    ("reader", "读书人", "📖"),
+]
+
+DEMO_EXTRA_POSTS = [
+    {
+        "barId": 1,
+        "author": "gamer",
+        "tag": "闲聊",
+        "title": "分享一下我的办公桌面，全是快乐",
+        "content": "机械键盘 + 双屏 + 升降桌，摸鱼也要摸得有仪式感。桌面摆件越看越舒服。",
+        "images": [
+            "https://picsum.photos/seed/b3/400/300",
+            "https://picsum.photos/seed/b4/400/300",
+            "https://picsum.photos/seed/b5/400/300",
+        ],
+        "views": 201,
+        "hoursAgo": 24,
+        "comments": [],
+    },
+    {
+        "barId": 1,
+        "author": "coder",
+        "tag": "资源分享",
+        "title": "整理了 50 个前端面试高频考点，需要的自取",
+        "content": "涵盖 HTML/CSS/JS/Vue/网络/算法几大模块，每个考点都附了简短答案，适合面试前突击。",
+        "images": ["https://picsum.photos/seed/b6/400/300"],
+        "views": 432,
+        "hoursAgo": 48,
+        "comments": [
+            {"author": "frontend_girl", "text": "正好需要，感谢整理！", "hoursAgo": 40},
+        ],
+    },
+    {
+        "barId": 5,
+        "author": "reader",
+        "tag": "书单",
+        "title": "2026 上半年读过最值得推荐的 5 本书",
+        "content": "从小说到社科，每一本都认真读完了，附上简单书评，书荒的同学可以参考。",
+        "images": ["https://picsum.photos/seed/b7/400/300"],
+        "views": 98,
+        "hoursAgo": 72,
+        "comments": [],
+    },
+]
+
+# 吧图：库里没填吧图时补上前端静态图路径（打包进 App / H5，永久可用，不怕后端磁盘重置）
+BAR_IMAGES = {
+    1: "/static/images/bars/前端.jpg",
+    2: "/static/images/bars/美食.jpg",
+    3: "/static/images/bars/游戏.jpg",
+    4: "/static/images/bars/电影.jpg",
+    5: "/static/images/bars/读书.jpg",
+    6: "/static/images/bars/音乐.jpg",
+    7: "/static/images/bars/足球.jpg",
+    8: "/static/images/bars/科技.jpg",
+    9: "/static/images/bars/摄影.jpg",
+    10: "/static/images/bars/吉他.jpg",
+    11: "/static/images/bars/养猫.jpg",
+    12: "/static/images/bars/跑步.jpg",
+    13: "/static/images/bars/烘焙.jpg",
+    14: "/static/images/bars/手工.jpg",
+    15: "/static/images/bars/钓鱼.jpg",
+    16: "/static/images/bars/旅游.jpg",
+}
+
+DEMO_EXTRA_PASSWORD = "demo123456"
+
+
+def ensure_app_tables_and_seed() -> str:
+    """启动自检：补建后续新增的表 + 把只在前端本地存在过的演示内容补进库（幂等）
+
+    · 只用 CREATE TABLE IF NOT EXISTS / 条件 INSERT / 条件 UPDATE：绝不 DROP、绝不改已有列
+    · 命中自然键（用户名 / 帖子标题）就跳过，因此每次部署、每次重启都能安全执行
+    """
+    for ddl in (FOOTPRINTS_DDL, NOTIFY_READ_DDL):
+        execute(ddl)
+
+    notes: list[str] = []
+    password_hash: Optional[str] = None
+    user_ids: dict[str, Optional[int]] = {}
+
+    def user_id_of(username: str) -> Optional[int]:
+        if username not in user_ids:
+            row = query_one("SELECT id FROM users WHERE username = %s", (username,))
+            user_ids[username] = int(row["id"]) if row else None
+        return user_ids[username]
+
+    # 1) 演示账号：前端本地数据里的「作者名」升级成真账号
+    for username, nickname, avatar in DEMO_EXTRA_USERS:
+        if user_id_of(username):
+            continue
+        if password_hash is None:
+            password_hash = hash_password(DEMO_EXTRA_PASSWORD)
+        execute(
+            """INSERT INTO users (username, password_hash, nickname, avatar, role, status)
+               VALUES (%s, %s, %s, %s, 'user', 1)""",
+            (username, password_hash, nickname, avatar),
+        )
+        user_ids.pop(username, None)  # 清缓存，下面重新查一次拿自增 id
+        notes.append(f"演示账号 {username}")
+
+    # 2) 演示帖子（含图片与评论）
+    for spec in DEMO_EXTRA_POSTS:
+        if query_value("SELECT COUNT(*) AS c FROM posts WHERE title = %s", (spec["title"],), 0):
+            continue
+        bar_id = query_value("SELECT id FROM bars WHERE id = %s", (spec["barId"],))
+        author_id = user_id_of(spec["author"])
+        if not bar_id or not author_id:
+            continue
+        post_id = insert_returning_id(
+            """INSERT INTO posts (bar_id, user_id, tag, title, content,
+                                  like_count, comment_count, forward_count, view_count, created_at)
+               VALUES (%s, %s, %s, %s, %s, 0, %s, 0, %s, NOW() - INTERVAL %s HOUR)""",
+            (
+                bar_id,
+                author_id,
+                spec["tag"],
+                spec["title"],
+                spec["content"],
+                len(spec["comments"]),
+                spec["views"],
+                spec["hoursAgo"],
+            ),
+        )
+        for idx, image_url in enumerate(spec["images"]):
+            execute(
+                """INSERT IGNORE INTO post_images (post_id, image_url, sort_order)
+                   VALUES (%s, %s, %s)""",
+                (post_id, image_url, idx),
+            )
+        for comment in spec["comments"]:
+            comment_user_id = user_id_of(comment["author"])
+            if not comment_user_id:
+                continue
+            execute(
+                """INSERT INTO comments (post_id, user_id, content, created_at)
+                   VALUES (%s, %s, %s, NOW() - INTERVAL %s HOUR)""",
+                (post_id, comment_user_id, comment["text"], comment["hoursAgo"]),
+            )
+        notes.append(f"演示帖子《{spec['title']}》")
+
+    # 3) 吧图：库里有值就不动，为空才补（前端静态图路径，H5 与 App 都直接可用）
+    for bar_id, img in BAR_IMAGES.items():
+        execute(
+            "UPDATE bars SET image = %s WHERE id = %s AND (image IS NULL OR image = '')",
+            (img, bar_id),
+        )
+
+    if notes:
+        return "表结构就绪（footprints, notify_read）；启动补数据：" + "、".join(notes)
+    return "表结构就绪（footprints, notify_read）；演示数据已是最新，无需补充"
+
+
+# ------------------------------ 足迹（浏览过的吧） ------------------------------
+@app.post("/api/bars/{bar_id}/visit", tags=["贴吧"], summary="记录足迹：我进过这个吧（幂等）")
+def visit_bar(bar_id: int, user: dict = Depends(get_current_user)):
+    if not query_one("SELECT id FROM bars WHERE id = %s", (bar_id,)):
+        raise HTTPException(status_code=404, detail="贴吧不存在")
+    execute(
+        """INSERT INTO footprints (user_id, bar_id, viewed_at) VALUES (%s, %s, NOW(6))
+           ON DUPLICATE KEY UPDATE viewed_at = NOW(6)""",
+        (user["id"], bar_id),
+    )
+    return ok({"barId": bar_id}, message="已记录足迹")
+
+
+@app.get("/api/users/me/footprints", tags=["贴吧"], summary="我的足迹（进吧页顶部 / 首页）")
+def my_footprints(
+    limit: int = Query(12, ge=1, le=30, description="最多返回多少条"),
+    user: dict = Depends(get_current_user),
+):
+    rows = query_all(
+        """SELECT f.bar_id, f.viewed_at, b.name, b.icon, b.image,
+                  (SELECT COUNT(*) FROM posts p
+                    WHERE p.bar_id = f.bar_id AND p.status = 1
+                      AND p.created_at > f.viewed_at) AS new_count
+             FROM footprints f
+             JOIN bars b ON b.id = f.bar_id
+            WHERE f.user_id = %s
+            ORDER BY f.viewed_at DESC, f.id DESC
+            LIMIT %s""",
+        (user["id"], limit),
+    )
+    return ok(
+        [
+            {
+                "id": r["bar_id"],
+                "barId": r["bar_id"],
+                "name": r["name"],
+                "icon": r["icon"],
+                "img": r["image"] or "",
+                # 角标 = 我上次逛完之后这个吧新增了几篇帖子（未读感，与前端原设计一致）
+                "badge": int(r["new_count"] or 0),
+                "viewedAt": iso(r["viewed_at"]),
+            }
+            for r in rows
+        ]
+    )
+
+
+# ------------------------------ 转发 ------------------------------
+@app.post("/api/posts/{post_id}/forward", tags=["帖子"], summary="转发帖子（转发数 +1）")
+def forward_post(post_id: int, user: dict = Depends(get_current_user)):
+    get_post_row_or_404(post_id)
+    execute("UPDATE posts SET forward_count = forward_count + 1 WHERE id = %s", (post_id,))
+    forwards = query_value("SELECT forward_count AS c FROM posts WHERE id = %s", (post_id,), 0)
+    return ok({"id": post_id, "forwards": forwards}, message="转发成功")
+
+
+# ------------------------------ 我的资料 ------------------------------
+@app.patch("/api/users/me", tags=["用户"], summary="修改我的资料（昵称 / 头像）")
+def update_me(body: ProfileIn, user: dict = Depends(get_current_user)):
+    sets: list[str] = []
+    params: list = []
+    if body.nickname is not None:
+        sets.append("nickname = %s")
+        params.append(body.nickname.strip())
+    if body.avatar is not None:
+        sets.append("avatar = %s")
+        params.append(body.avatar)
+    if not sets:
+        raise HTTPException(status_code=400, detail="昵称和头像至少传一个")
+
+    params.append(user["id"])
+    execute(f"UPDATE users SET {', '.join(sets)} WHERE id = %s", tuple(params))
+    row = query_one(
+        "SELECT id, username, nickname, avatar, role, status FROM users WHERE id = %s",
+        (user["id"],),
+    )
+    return ok(row, message="资料已更新")
+
+
+# ------------------------------ 互动消息 ------------------------------
+# 互动消息不建新表：直接由 likes / comments 现算，保证与帖子数据永远一致
+#   like    = 别人点赞了我的帖子
+#   reply   = 别人评论了我的帖子
+#   mention = 别人在评论里 @了我的昵称（排除我自己帖子下的评论，避免与 reply 重复）
+NOTIFY_UNION_SQL = """
+SELECT 'like' AS kind, l.id AS ref_id, u.id AS actor_id,
+       u.nickname AS actor, u.avatar AS actor_avatar,
+       p.id AS post_id, p.title AS post_title, '' AS content_text, l.created_at AS created_at
+  FROM likes l
+  JOIN posts p ON p.id = l.target_id
+  JOIN users u ON u.id = l.user_id
+ WHERE l.target_type = 'post' AND p.status = 1 AND p.user_id = %s AND u.id <> %s
+UNION ALL
+SELECT 'reply' AS kind, c.id AS ref_id, u.id AS actor_id,
+       u.nickname AS actor, u.avatar AS actor_avatar,
+       p.id AS post_id, p.title AS post_title, c.content AS content_text, c.created_at AS created_at
+  FROM comments c
+  JOIN posts p ON p.id = c.post_id
+  JOIN users u ON u.id = c.user_id
+ WHERE c.status = 1 AND p.status = 1 AND p.user_id = %s AND u.id <> %s
+UNION ALL
+SELECT 'mention' AS kind, c.id AS ref_id, u.id AS actor_id,
+       u.nickname AS actor, u.avatar AS actor_avatar,
+       p.id AS post_id, p.title AS post_title, c.content AS content_text, c.created_at AS created_at
+  FROM comments c
+  JOIN posts p ON p.id = c.post_id
+  JOIN users u ON u.id = c.user_id
+ WHERE c.status = 1 AND p.status = 1 AND u.id <> %s AND p.user_id <> %s AND c.content LIKE %s
+"""
+
+NOTIFY_TYPE_TEXT = {
+    "like": "赞了你的帖子",
+    "reply": "回复了你",
+    "mention": "在评论里 @了你",
+}
+
+
+def notify_params(user: dict) -> tuple:
+    """三个消息来源共用同一组参数（顺序必须与 NOTIFY_UNION_SQL 里的 7 个 %s 一一对应）"""
+    uid = user["id"]
+    nickname = user["nickname"] or user["username"]
+    return (uid, uid, uid, uid, uid, uid, f"%@{nickname}%")
+
+
+def notify_unread_count(user: dict) -> int:
+    """未读互动消息数（没有已读记录 = 全部未读）"""
+    params = notify_params(user)
+    read_at = query_value("SELECT read_at FROM notify_read WHERE user_id = %s", (user["id"],))
+    if read_at:
+        return int(
+            query_value(
+                f"SELECT COUNT(*) AS c FROM ({NOTIFY_UNION_SQL}) AS n WHERE n.created_at > %s",
+                (*params, read_at),
+                0,
+            )
+            or 0
+        )
+    return int(query_value(f"SELECT COUNT(*) AS c FROM ({NOTIFY_UNION_SQL}) AS n", params, 0) or 0)
+
+
+@app.get(
+    "/api/users/me/notifications/unread",
+    tags=["消息"],
+    summary="互动消息未读数（tab-bar 角标）",
+)
+def my_notifications_unread(user: dict = Depends(get_current_user)):
+    return ok({"unreadCount": notify_unread_count(user)})
+
+
+@app.get("/api/users/me/notifications", tags=["消息"], summary="互动消息（点赞 / 回复 / @我）")
+def my_notifications(
+    type: str = Query("all", pattern="^(all|like|reply|mention)$", description="消息类型"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=50, alias="pageSize"),
+    user: dict = Depends(get_current_user),
+):
+    page, page_size, offset = normalize_page(page, page_size)
+    where_sql = ""
+    extra: list = []
+    if type != "all":
+        where_sql = " WHERE n.kind = %s"
+        extra.append(type)
+
+    params = notify_params(user)
+    filter_params = params + tuple(extra)
+    total = int(
+        query_value(
+            f"SELECT COUNT(*) AS c FROM ({NOTIFY_UNION_SQL}) AS n{where_sql}",
+            filter_params,
+            0,
+        )
+        or 0
+    )
+    rows = query_all(
+        f"""SELECT * FROM ({NOTIFY_UNION_SQL}) AS n{where_sql}
+             ORDER BY n.created_at DESC, n.ref_id DESC LIMIT %s OFFSET %s""",
+        filter_params + (page_size, offset),
+    )
+    read_at = query_value("SELECT read_at FROM notify_read WHERE user_id = %s", (user["id"],))
+
+    items = [
+        {
+            "id": f"{r['kind']}-{r['ref_id']}",
+            "type": r["kind"],
+            # 字段名与前端消息卡片对齐：name / avatar / action / content / time
+            "action": NOTIFY_TYPE_TEXT.get(r["kind"], ""),
+            "name": r["actor"],
+            "avatar": r["actor_avatar"],
+            "content": r["content_text"] or r["post_title"],
+            "actorId": r["actor_id"],
+            "postId": r["post_id"],
+            "postTitle": r["post_title"],
+            "time": fmt_time(r["created_at"]),
+            "createdAt": iso(r["created_at"]),
+            "unread": bool(read_at is None or r["created_at"] > read_at),
+        }
+        for r in rows
+    ]
+    data = page_data(items, total, page, page_size)
+    data["unreadCount"] = notify_unread_count(user)
+    return ok(data)
+
+
+@app.post(
+    "/api/users/me/notifications/read",
+    tags=["消息"],
+    summary="互动消息标记为已读（角标清零）",
+)
+def read_notifications(user: dict = Depends(get_current_user)):
+    execute(
+        """INSERT INTO notify_read (user_id, read_at) VALUES (%s, NOW(6))
+           ON DUPLICATE KEY UPDATE read_at = NOW(6)""",
+        (user["id"],),
+    )
+    return ok({"unreadCount": 0}, message="已标记为已读")
+
+
+# =============================================================================
+# 17. 启动入口
 #     本地开发：python main.py（自动热重载，端口取 PORT 或 8000）
 #     云端部署（Render）：Start Command 用
 #         uvicorn main:app --host 0.0.0.0 --port $PORT

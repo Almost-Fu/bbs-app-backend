@@ -66,6 +66,14 @@ EXPECTED_PATHS = {
     "/api/admin/users/{user_id}/status",
     "/api/admin/comments",
     "/api/comments/{comment_id}",
+    # 数据收口：足迹 / 转发 / 个人资料 / 互动消息
+    "/api/bars/{bar_id}/visit",
+    "/api/users/me/footprints",
+    "/api/posts/{post_id}/forward",
+    "/api/users/me",
+    "/api/users/me/notifications",
+    "/api/users/me/notifications/unread",
+    "/api/users/me/notifications/read",
 }
 
 FAILED = []
@@ -610,6 +618,194 @@ def run_admin_backfill_checks() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 数据收口测试（足迹 / 转发 / 改资料 / 互动消息 / 启动自动补演示数据）
+#   · 足迹、资料、消息都用自己的临时数据测，不改动演示账号的核心信息
+#   · 演示数据补全由服务启动时的自检完成，这里断言"确实补进去了"
+# ---------------------------------------------------------------------------
+def run_data_centralization_checks() -> None:
+    status, res, admin_token = login_token("admin", "admin123456")
+    status, res, demo_token = login_token("demo", "demo123456")
+    check("演示账号可登录（数据收口用例）", bool(admin_token) and bool(demo_token), str(res)[:200])
+    if not admin_token or not demo_token:
+        return
+
+    # ---------- 0) 启动自检：新表已建 + 前端本地演示数据已补进数据库 ----------
+    status, res, _ = request("GET", "/api/bars")
+    bars = (res or {}).get("data") or []
+    check(
+        "16 个吧，且吧图已由数据库提供",
+        status == 200
+        and len(bars) == 16
+        and all(str(b.get("img") or "").startswith("/static/images/bars/") for b in bars),
+        f"{len(bars)} 个吧，示例 img={bars[0].get('img') if bars else None}",
+    )
+
+    status, res, _ = request("GET", "/api/posts?page=1&pageSize=50")
+    posts = ((res or {}).get("data") or {}).get("list") or []
+    extra_title = "整理了 50 个前端面试高频考点，需要的自取"
+    extra_post = next((p for p in posts if p["title"] == extra_title), None)
+    check(
+        "前端本地那 3 篇帖子已补进数据库",
+        status == 200 and len(posts) >= 8 and extra_post is not None,
+        f"共 {len(posts)} 篇",
+    )
+    check(
+        "补进来的帖子带图与评论（作者账号也建好了）",
+        bool(extra_post)
+        and len(extra_post.get("images") or []) == 1
+        and extra_post.get("commentCount") == 1
+        and extra_post.get("author") == "代码搬运工",
+        str(extra_post)[:200],
+    )
+
+    # ---------- 1) 足迹 ----------
+    status, res, _ = request("GET", "/api/users/me/footprints")
+    check("未登录访问足迹 → 401", status == 401, str(res)[:200])
+
+    status, res, _ = request("POST", "/api/bars/1/visit", token=demo_token)
+    check("记录足迹成功", status == 200, str(res)[:200])
+    request("POST", "/api/bars/3/visit", token=demo_token)
+
+    status, res, _ = request("GET", "/api/users/me/footprints", token=demo_token)
+    data = (res or {}).get("data") or []
+    check(
+        "足迹按最近浏览倒序、字段齐全",
+        status == 200
+        and [f["barId"] for f in data] == [3, 1]
+        and data[0]["name"] == "游戏吧"
+        and {"badge", "img", "icon", "viewedAt"} <= set(data[0]),
+        str(data)[:200],
+    )
+
+    request("POST", "/api/bars/1/visit", token=demo_token)
+    status, res, _ = request("GET", "/api/users/me/footprints", token=demo_token)
+    data = (res or {}).get("data") or []
+    check("重复浏览不产生重复足迹（最近浏览排最前）", len(data) == 2 and data[0]["barId"] == 1, str(data)[:200])
+    check("刚浏览过的吧角标为 0", all(f["badge"] == 0 for f in data), str(data)[:200])
+
+    # 足迹角标：浏览之后该吧新增的帖子要计入角标
+    time.sleep(1.2)  # 帖子时间是秒级精度，等 1.2 秒确保新帖时间晚于刚才的浏览时间
+    raw, ctype = build_multipart(
+        {
+            "barId": 1,
+            "title": f"足迹角标测试帖 {uuid.uuid4().hex[:6]}",
+            "content": "验证足迹角标",
+            "tag": "闲聊",
+        },
+        [],
+    )
+    status, res, _ = request("POST", "/api/posts", raw=raw, content_type=ctype, token=admin_token)
+    check("管理员在吧 1 发帖成功（角标用例）", status == 200, str(res)[:200])
+    status, res, _ = request("GET", "/api/users/me/footprints", token=demo_token)
+    badge_map = {f["barId"]: f["badge"] for f in ((res or {}).get("data") or [])}
+    check("浏览后该吧新增的帖子计入角标", badge_map.get(1) == 1, str(badge_map))
+
+    # ---------- 2) 转发 ----------
+    status, res, _ = request("POST", "/api/posts/4/forward")
+    check("未登录转发 → 401", status == 401, str(res)[:200])
+    status, res, _ = request("POST", "/api/posts/999999/forward", token=demo_token)
+    check("转发不存在的帖子 → 404", status == 404, str(res)[:200])
+    status, res, _ = request("GET", "/api/posts/4")
+    before_forwards = (res or {}).get("data", {}).get("forwards", 0)
+    status, res, _ = request("POST", "/api/posts/4/forward", token=demo_token)
+    check(
+        "转发成功且计数 +1",
+        status == 200 and (res.get("data") or {}).get("forwards") == before_forwards + 1,
+        str(res)[:200],
+    )
+
+    # ---------- 3) 修改我的资料（用临时用户，不动演示账号） ----------
+    suffix = uuid.uuid4().hex[:6]
+    tmp_username = f"profile_{suffix}"
+    status, res, _ = request(
+        "POST",
+        "/api/auth/register",
+        body={"username": tmp_username, "password": "tmp123456", "nickname": "待改名", "avatar": "🙂"},
+    )
+    tmp_token = ((res or {}).get("data") or {}).get("token")
+    check("注册临时用户（改资料用）", bool(tmp_token), str(res)[:200])
+
+    status, res, _ = request(
+        "PATCH", "/api/users/me", body={"nickname": "改过的昵称", "avatar": "🐼"}, token=tmp_token
+    )
+    check(
+        "改昵称 + 头像成功",
+        status == 200
+        and (res.get("data") or {}).get("nickname") == "改过的昵称"
+        and (res.get("data") or {}).get("avatar") == "🐼",
+        str(res)[:200],
+    )
+    status, res, _ = request("GET", "/api/auth/me", token=tmp_token)
+    check("再查 /auth/me 已是新资料", status == 200 and res["data"]["nickname"] == "改过的昵称", str(res)[:200])
+    status, res, _ = request("PATCH", "/api/users/me", body={}, token=tmp_token)
+    check("昵称与头像都不传 → 400", status == 400, str(res)[:200])
+    status, res, _ = request("PATCH", "/api/users/me", body={"nickname": "无 token"})
+    check("未登录改资料 → 401", status == 401, str(res)[:200])
+
+    # ---------- 4) 互动消息（点赞 / 回复 / @我） ----------
+    status, res, _ = request("GET", "/api/users/me/notifications")
+    check("未登录看互动消息 → 401", status == 401, str(res)[:200])
+    status, res, _ = request("GET", "/api/users/me/notifications?type=boss", token=demo_token)
+    check("非法消息类型 → 422", status == 422, str(res)[:200])
+
+    status, res, _ = request("GET", "/api/users/me/notifications", token=demo_token)
+    data = (res or {}).get("data") or {}
+    check(
+        "互动消息返回分页结构 + unreadCount",
+        status == 200 and {"list", "total", "unreadCount"} <= set(data),
+        str(data)[:200],
+    )
+    before_total = data.get("total", 0)
+
+    # demo 的帖子（帖 4）被管理员点赞 + 评论；管理员又在别人的帖子里 @demo
+    status, res, _ = request("POST", "/api/posts/4/like", token=admin_token)
+    check("管理员点赞 demo 的帖子", status == 200, str(res)[:200])
+    status, res, _ = request("POST", "/api/posts/4/comments", body={"text": "写得不错！"}, token=admin_token)
+    check("管理员评论 demo 的帖子", status == 200, str(res)[:200])
+    status, res, _ = request(
+        "POST", "/api/posts/1/comments", body={"text": "@测试用户 求分享经验"}, token=admin_token
+    )
+    check("管理员在别人的帖子下 @demo", status == 200, str(res)[:200])
+
+    status, res, _ = request("GET", "/api/users/me/notifications", token=demo_token)
+    data = (res or {}).get("data") or {}
+    kinds = sorted({m["type"] for m in data.get("list", [])})
+    check("收到点赞 / 回复 / @我 三类消息", status == 200 and kinds == ["like", "mention", "reply"], str(kinds))
+    check("消息总数 = 原有 + 3", data.get("total") == before_total + 3, f"{before_total} → {data.get('total')}")
+    check(
+        "未读数与总数一致（尚未标记已读）",
+        data.get("unreadCount") == data.get("total"),
+        str(data.get("unreadCount")),
+    )
+    first = (data.get("list") or [{}])[0]
+    check(
+        "消息字段可直接渲染（avatar / name / action / content / time）",
+        {"avatar", "name", "action", "content", "time", "postId"} <= set(first),
+        str(first)[:200],
+    )
+
+    for kind in ("like", "reply", "mention"):
+        status, res, _ = request(f"GET", f"/api/users/me/notifications?type={kind}", token=demo_token)
+        rows = ((res or {}).get("data") or {}).get("list") or []
+        check(
+            f"按类型筛选：{kind}",
+            status == 200 and bool(rows) and all(r["type"] == kind for r in rows),
+            str(rows)[:150],
+        )
+
+    status, res, _ = request("GET", "/api/users/me/notifications/unread", token=demo_token)
+    check("未读数接口可读", status == 200 and res["data"]["unreadCount"] >= 3, str(res)[:200])
+    status, res, _ = request("POST", "/api/users/me/notifications/read", token=demo_token)
+    check("标记已读成功（角标清零）", status == 200 and res["data"]["unreadCount"] == 0, str(res)[:200])
+    status, res, _ = request("GET", "/api/users/me/notifications/unread", token=demo_token)
+    check("标记后未读数为 0", status == 200 and res["data"]["unreadCount"] == 0, str(res)[:200])
+    time.sleep(1.2)  # 评论时间也是秒级精度，等 1.2 秒确保新评论时间晚于"标记已读"时间
+    request("POST", "/api/posts/4/comments", body={"text": "已读之后的新评论"}, token=admin_token)
+    status, res, _ = request("GET", "/api/users/me/notifications/unread", token=demo_token)
+    check("标记后再有新互动 → 未读数回到 1", status == 200 and res["data"]["unreadCount"] == 1, str(res)[:200])
+
+
+# ---------------------------------------------------------------------------
 # 主流程
 # ---------------------------------------------------------------------------
 def main() -> int:
@@ -660,6 +856,8 @@ def main() -> int:
             run_super_admin_checks()
             print("  --- 后台管理补全（用户管理 / 贴吧编辑删除 / 全部评论） ---")
             run_admin_backfill_checks()
+            print("  --- 数据收口（足迹 / 转发 / 改资料 / 互动消息） ---")
+            run_data_centralization_checks()
         else:
             print("      提示：数据库不可用时业务接口返回 503，message 里带 MySQL 报错；")
             print("            先 net start MySQL 并导入 sql/bbs_schema.sql，再重跑本脚本。")
