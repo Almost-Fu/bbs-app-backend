@@ -1,0 +1,185 @@
+### ===========================================================================
+### 贴吧社区 bbs-app 后端接口测试（VS Code REST Client 扩展，逐个点 Send Request）
+### 用法：先跑「1. 健康检查」确认服务在跑，再按顺序往下跑
+### ===========================================================================
+@baseUrl = http://127.0.0.1:8000
+
+### 1. 健康检查（不用登录，db=true 表示数据库已连上）
+GET {{baseUrl}}/api/health
+
+### 2. 注册（用户名已存在会返回 400）
+POST {{baseUrl}}/api/auth/register
+Content-Type: application/json
+
+{
+  "username": "tester",
+  "password": "tester123",
+  "nickname": "接口测试号",
+  "avatar": "🧪"
+}
+
+### 3. 登录（拿到 token；下面用命名请求把 token 提取出来给后续复用）
+# @name login
+POST {{baseUrl}}/api/auth/login
+Content-Type: application/json
+
+{
+  "username": "demo",
+  "password": "demo123456"
+}
+
+###
+@token = {{login.response.body.$.data.token}}
+
+### 4. 当前登录用户
+GET {{baseUrl}}/api/auth/me
+Authorization: Bearer {{token}}
+
+### 5. 所有贴吧列表（带 token 时会返回 followed 状态）
+GET {{baseUrl}}/api/bars
+Authorization: Bearer {{token}}
+
+### 6. 单个贴吧详情
+GET {{baseUrl}}/api/bars/1
+Authorization: Bearer {{token}}
+
+### 7. 吧内帖子分页列表（前端吧页：同时返回 bar + list）
+GET {{baseUrl}}/api/bars/1/posts?page=1&pageSize=10
+Authorization: Bearer {{token}}
+
+### 8. 首页信息流（按热度排序）
+GET {{baseUrl}}/api/posts?page=1&pageSize=10&order=hot
+Authorization: Bearer {{token}}
+
+### 9. 搜索帖子
+GET {{baseUrl}}/api/search?keyword=前端&page=1&pageSize=10
+
+### 10. 发布文字帖（无图）
+POST {{baseUrl}}/api/posts
+Authorization: Bearer {{token}}
+Content-Type: multipart/form-data; boundary=----bbsBoundary
+
+------bbsBoundary
+Content-Disposition: form-data; name="barId"
+
+1
+------bbsBoundary
+Content-Disposition: form-data; name="title"
+
+接口测试：这是一条没有配图的帖子
+------bbsBoundary
+Content-Disposition: form-data; name="content"
+
+正文随便写点什么，标题和正文都是必填。
+------bbsBoundary
+Content-Disposition: form-data; name="tag"
+
+技术交流
+------bbsBoundary--
+
+### 11. 发布带图帖（最多 9 个 files 段；需要本地有 ./test.png）
+POST {{baseUrl}}/api/posts
+Authorization: Bearer {{token}}
+Content-Type: multipart/form-data; boundary=----bbsBoundary
+
+------bbsBoundary
+Content-Disposition: form-data; name="barId"
+
+1
+------bbsBoundary
+Content-Disposition: form-data; name="title"
+
+接口测试：带两张图的帖子
+------bbsBoundary
+Content-Disposition: form-data; name="content"
+
+图片会存到 uploads/posts/YYYYMM/ 下，返回 /uploads/... 可直接访问。
+------bbsBoundary
+Content-Disposition: form-data; name="tag"
+
+技术交流
+------bbsBoundary
+Content-Disposition: form-data; name="files"; filename="test1.png"
+Content-Type: image/png
+
+< ./test1.png
+------bbsBoundary
+Content-Disposition: form-data; name="files"; filename="test2.png"
+Content-Type: image/png
+
+< ./test2.png
+------bbsBoundary--
+
+### 12. 帖子详情（浏览量 +1）
+GET {{baseUrl}}/api/posts/1
+Authorization: Bearer {{token}}
+
+### 13. 帖子点赞 / 取消点赞
+POST {{baseUrl}}/api/posts/1/like
+Authorization: Bearer {{token}}
+
+### 13b. 取消点赞
+DELETE {{baseUrl}}/api/posts/1/like
+Authorization: Bearer {{token}}
+
+### 14. 收藏 / 取消收藏
+POST {{baseUrl}}/api/posts/1/favorite
+Authorization: Bearer {{token}}
+
+### 14b. 取消收藏
+DELETE {{baseUrl}}/api/posts/1/favorite
+Authorization: Bearer {{token}}
+
+### 15. 评论列表
+GET {{baseUrl}}/api/posts/1/comments?page=1&pageSize=20
+Authorization: Bearer {{token}}
+
+### 16. 发表评论（评论成功后帖子的 commentCount +1）
+POST {{baseUrl}}/api/posts/1/comments
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "text": "来自 REST Client 的评论"
+}
+
+### 17. 评论点赞 / 取消点赞（101 是种子评论 id）
+POST {{baseUrl}}/api/comments/101/like
+Authorization: Bearer {{token}}
+
+### 17b. 取消评论点赞
+DELETE {{baseUrl}}/api/comments/101/like
+Authorization: Bearer {{token}}
+
+### 18. 关注贴吧 / 取消关注
+POST {{baseUrl}}/api/bars/2/follow
+Authorization: Bearer {{token}}
+
+### 18b. 取消关注
+DELETE {{baseUrl}}/api/bars/2/follow
+Authorization: Bearer {{token}}
+
+### 19. 我关注的吧 / 我的帖子 / 我的收藏
+GET {{baseUrl}}/api/users/me/followed-bars
+Authorization: Bearer {{token}}
+
+###
+GET {{baseUrl}}/api/users/me/posts?page=1&pageSize=10
+Authorization: Bearer {{token}}
+
+###
+GET {{baseUrl}}/api/users/me/favorites?page=1&pageSize=10
+Authorization: Bearer {{token}}
+
+### 20. 管理员建吧（用 admin 账号登录换 token 后再跑；普通用户会返回 403）
+POST {{baseUrl}}/api/bars
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "name": "测试吧",
+  "icon": "🧪",
+  "intro": "由接口创建的吧",
+  "owner": "吧务管理",
+  "sort": 99
+}

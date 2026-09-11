@@ -1,0 +1,60 @@
+# =============================================================================
+# Render 蓝图（Infrastructure as Code）
+#   用法：把 bbs-app-backend 推到 GitHub 后，在 Render →
+#        New + → Blueprint → 选择该仓库 → Render 会按本文件创建 Web Service
+#   也可以不用本文件，直接在面板里手填（见「部署文档」第 ② 步），效果一样。
+#
+#   注意：
+#   1) sync: false 表示「值留空，部署时在面板里手动填」，用于密码/密钥这类机密
+#   2) 免费实例 15 分钟无请求会休眠，冷启动约 30~60 秒（健康检查会先把它唤醒）
+#   3) rootDir 只有在「三个项目放在同一个仓库」时才需要
+# =============================================================================
+services:
+  - type: web
+    name: bbs-app-backend
+    runtime: python
+    plan: free
+    region: singapore                 # 选离访问者近的：singapore / oregon / frankfurt / ohio
+    # rootDir: bbs-app-backend        # ← 单独一个仓库时删掉/注释本行；monorepo 时保留
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.0
+      - key: APP_ENV
+        value: production
+      # ---- Aiven 云 MySQL 连接信息（在 Aiven 控制台 Overview 里能看到）----
+      - key: DB_HOST
+        sync: false                   # 例如 mysql-xxxx-yyyy.a.aivencloud.com
+      - key: DB_PORT
+        sync: false                   # Aiven 给的端口（不是 3306）
+      - key: DB_USER
+        sync: false                   # 一般是 avnadmin
+      - key: DB_PASSWORD
+        sync: false                   # Aiven 创建服务时生成，只显示一次
+      - key: DB_NAME
+        value: bbs_app
+      # ---- TLS：Aiven 强制要求 ----
+      - key: DB_SSL
+        value: "true"
+      - key: DB_SSL_CA_PEM
+        sync: false                   # 把 Aiven 的 ca.pem 全文粘进来（可直接多行粘贴）
+      # ---- 连接池 / 重试 ----
+      - key: DB_POOL_SIZE
+        value: "8"
+      - key: DB_CONNECT_RETRIES
+        value: "3"
+      - key: DB_CONNECT_RETRY_DELAY
+        value: "1.5"
+      # ---- 鉴权与跨域 ----
+      - key: JWT_SECRET
+        sync: false                   # 至少 32 字符：python -c "import secrets;print(secrets.token_urlsafe(48))"
+      - key: JWT_EXPIRE_HOURS
+        value: "168"
+      - key: CORS_ORIGINS
+        sync: false                   # 前端部署好后填：https://xxx.vercel.app,https://yyy.vercel.app
+      # ---- 图片存放（如需长期保存，先在 Render 挂 Persistent Disk 再放开这一行）----
+      # - key: UPLOAD_DIR
+      #   value: /var/data/uploads

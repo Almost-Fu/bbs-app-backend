@@ -1,0 +1,8 @@
+# bbs-app backend dependencies (FastAPI + MySQL, raw SQL, no ORM)
+# NOTE: keep this file ASCII-only - pip decodes it with the OS locale (GBK on Chinese Windows)
+fastapi>=0.110
+uvicorn[standard]>=0.27
+pymysql>=1.1
+PyJWT>=2.8
+python-multipart>=0.0.9
+python-dotenv>=1.0
