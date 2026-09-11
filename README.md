@@ -157,6 +157,7 @@ curl http://127.0.0.1:8000/api/health
 | 路径 | 内容 | 是否持久 |
 |---|---|---|
 | `/static/avatars/*.png` | 头像图（随代码发布：内置 8 张 + 1 张默认图） | **持久**（在仓库里，重新部署不会丢） |
+| `/static/images/bars/*.jpg` | **贴吧吧图**（16 张，与前端 `static/images/bars` 同一份） | **持久**（在仓库里；管理后台与 App 都从这里/前端加载） |
 | `/uploads/avatars/...` | 用户**自己上传**的头像（`POST /api/users/me/avatar`） | 存实例磁盘，**重新部署会丢**（前端会回落到默认头像，要长期保存需挂 Persistent Disk） |
 | `/uploads/posts/...` | 用户上传的帖子图片 | 存实例磁盘，**重新部署会丢**（需挂 Persistent Disk） |
 

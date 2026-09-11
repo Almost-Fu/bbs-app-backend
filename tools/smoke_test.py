@@ -20,6 +20,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
@@ -889,6 +890,32 @@ def run_data_centralization_checks() -> None:
         "吧的形象仍由数据库的吧图提供（/static/images/bars/）",
         status == 200 and all(str(b.get("img") or "").startswith("/static/images/bars/") for b in bars_now),
         str(bars_now[:1])[:160],
+    )
+
+    # 吧图必须能从后端 /static 访问：管理后台就是「VITE_STATIC_BASE + 相对路径」这样加载的，
+    # 之前后端缺这批文件导致后台吧图全部 404，这条断言专门盯着它。
+    # 注意：只看"能不能拿到 + 是不是图片响应"，不限定 JPEG（源素材里有几张是别的格式）
+    img_results = {}
+    for b in bars_now:
+        img_path = str(b.get("img") or "")
+        try:
+            with urllib.request.urlopen(BASE_URL + urllib.parse.quote(img_path), timeout=15) as resp:
+                body = resp.read()
+                ctype = (resp.headers.get("Content-Type") or "").lower()
+                img_results[b["id"]] = (resp.status, ctype, len(body), body[:4].hex())
+        except urllib.error.HTTPError as err:
+            img_results[b["id"]] = (err.code, "", 0, "")
+        except Exception as exc:  # noqa: BLE001
+            img_results[b["id"]] = (str(exc)[:40], "", 0, "")
+    bad_imgs = {
+        k: v
+        for k, v in img_results.items()
+        if v[0] != 200 or not str(v[1]).startswith("image/") or v[2] < 100
+    }
+    check(
+        "全部吧图都能从后端 /static 访问（管理后台的加载路径）",
+        not bad_imgs,
+        f"异常：{bad_imgs}",
     )
 
 
