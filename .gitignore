@@ -4,3 +4,5 @@ __pycache__/
 venv/
 .env
 uploads/
+# 本地 E2E 冒烟测试日志（tools/e2e_with_temp_mysql.bat 生成）
+_e2e.txt
