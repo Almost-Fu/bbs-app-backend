@@ -1971,24 +1971,26 @@ DEMO_EXTRA_POSTS = [
     },
 ]
 
-# 吧图：库里没填吧图时补上前端静态图路径（打包进 App / H5，永久可用，不怕后端磁盘重置）
+# 吧图：库里没填吧图时补上静态图路径（前端 static/images/bars 与后端 /static/images/bars 各一份）
+#   ⚠️ 文件名必须纯 ASCII：HBuilderX 打 App 包时不允许中文 / 全角文件名
+#      早期用的是中文名（如「养猫.jpg」），启动自检 migrate_bar_images() 会自动改成 bar-{id}.jpg
 BAR_IMAGES = {
-    1: "/static/images/bars/前端.jpg",
-    2: "/static/images/bars/美食.jpg",
-    3: "/static/images/bars/游戏.jpg",
-    4: "/static/images/bars/电影.jpg",
-    5: "/static/images/bars/读书.jpg",
-    6: "/static/images/bars/音乐.jpg",
-    7: "/static/images/bars/足球.jpg",
-    8: "/static/images/bars/科技.jpg",
-    9: "/static/images/bars/摄影.jpg",
-    10: "/static/images/bars/吉他.jpg",
-    11: "/static/images/bars/养猫.jpg",
-    12: "/static/images/bars/跑步.jpg",
-    13: "/static/images/bars/烘焙.jpg",
-    14: "/static/images/bars/手工.jpg",
-    15: "/static/images/bars/钓鱼.jpg",
-    16: "/static/images/bars/旅游.jpg",
+    1: "/static/images/bars/bar-1.jpg",
+    2: "/static/images/bars/bar-2.jpg",
+    3: "/static/images/bars/bar-3.jpg",
+    4: "/static/images/bars/bar-4.jpg",
+    5: "/static/images/bars/bar-5.jpg",
+    6: "/static/images/bars/bar-6.jpg",
+    7: "/static/images/bars/bar-7.jpg",
+    8: "/static/images/bars/bar-8.jpg",
+    9: "/static/images/bars/bar-9.jpg",
+    10: "/static/images/bars/bar-10.jpg",
+    11: "/static/images/bars/bar-11.jpg",
+    12: "/static/images/bars/bar-12.jpg",
+    13: "/static/images/bars/bar-13.jpg",
+    14: "/static/images/bars/bar-14.jpg",
+    15: "/static/images/bars/bar-15.jpg",
+    16: "/static/images/bars/bar-16.jpg",
 }
 
 # 演示 / 内置账号 → 固定头像图（让每个账号的头像各不相同）
@@ -2046,6 +2048,30 @@ def migrate_avatars() -> int:
             "ALTER TABLE users MODIFY avatar VARCHAR(255) NOT NULL "
             f"DEFAULT '{DEFAULT_AVATAR}' COMMENT '头像：图片地址（/static/avatars/xxx.png 或 http URL）'"
         )
+        changed += 1
+    return changed
+
+
+def migrate_bar_images() -> int:
+    """把库里带中文的吧图路径改成 ASCII 文件名（幂等，可反复执行）
+
+    背景：早期吧图按中文命名（/static/images/bars/养猫.jpg）。HBuilderX 打 App 包时
+          不允许中文 / 全角文件名，会直接报错中止打包（H5 没这个限制，所以一直没暴露）。
+    做法：只处理「本项目内置吧图」（以 /static/images/bars/ 开头）且文件名含非 ASCII 的路径，
+          统一改成 /static/images/bars/bar-{id}.jpg，并顺手把磁盘上的旧文件改名；
+          外部图片 URL、用户自己填的地址、已经改过的行都不动。
+    """
+    changed = 0
+    for row in query_all("SELECT id, image FROM bars"):
+        image = str(row["image"] or "").strip()
+        if not image.startswith("/static/images/bars/") or image.isascii():
+            continue
+        target = f"/static/images/bars/bar-{int(row['id'])}.jpg"
+        old_file = STATIC_DIR / image[len("/static/"):]
+        new_file = STATIC_DIR / target[len("/static/"):]
+        if old_file.exists() and not new_file.exists():
+            old_file.rename(new_file)
+        execute("UPDATE bars SET image = %s WHERE id = %s", (target, row["id"]))
         changed += 1
     return changed
 
@@ -2138,6 +2164,10 @@ def ensure_app_tables_and_seed() -> str:
     # 5) 贴吧：删掉 emoji 图标列（吧的形象统一用 bars.image 吧图）
     if migrate_bars_drop_icon():
         notes.append("删除 bars.icon 列（emoji 吧图标已废弃）")
+
+    # 6) 吧图：中文文件名 → ASCII（App 打包不允许中文/全角文件名）
+    if migrate_bar_images():
+        notes.append("吧图路径换成 ASCII 文件名（bar-{id}.jpg）")
 
     if notes:
         return "表结构就绪（footprints, notify_read）；启动补数据：" + "、".join(notes)
