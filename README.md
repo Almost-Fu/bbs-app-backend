@@ -131,6 +131,13 @@ curl http://127.0.0.1:8000/api/health
 | DELETE | `/api/comments/{comment_id}/like` | 取消评论点赞 | ✔ |
 | GET | `/api/users/me/posts` | 我的帖子 | ✔ |
 | GET | `/api/users/me/favorites` | 我的收藏 | ✔ |
+| PATCH | `/api/users/me` | 修改我的昵称 / 头像 | ✔ |
+| POST | `/api/posts/{post_id}/forward` | 转发帖子（转发数 +1） | ✔ |
+| POST | `/api/bars/{bar_id}/visit` | 记录足迹：我进过这个吧（幂等） | ✔ |
+| GET | `/api/users/me/footprints` | 我的足迹（角标 = 上次浏览后该吧新增帖数） | ✔ |
+| GET | `/api/users/me/notifications` | 互动消息：点赞 / 回复 / @我（由 likes、comments 聚合） | ✔ |
+| GET | `/api/users/me/notifications/unread` | 互动消息未读数（App 底部角标） | ✔ |
+| POST | `/api/users/me/notifications/read` | 互动消息标记已读（角标清零） | ✔ |
 | GET | `/api/admin/admins` | 管理员列表（分页 + 关键字/角色/状态筛选） | ✔ **高级管理员** |
 | GET | `/api/admin/admins/{admin_id}` | 管理员详情 | ✔ **高级管理员** |
 | POST | `/api/admin/admins` | 新增管理员（可指定 admin / super_admin） | ✔ **高级管理员** |
