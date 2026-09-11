@@ -114,6 +114,8 @@ curl http://127.0.0.1:8000/api/health
 | DELETE | `/api/bars/{bar_id}/follow` | 取消关注 | ✔ |
 | GET | `/api/users/me/followed-bars` | 我关注的吧 | ✔ |
 | POST | `/api/bars` | 创建贴吧（仅管理员） | ✔ admin |
+| PUT | `/api/bars/{bar_id}` | 编辑贴吧（仅管理员，吧名唯一） | ✔ admin |
+| DELETE | `/api/bars/{bar_id}` | 删除贴吧（仅管理员；吧内帖子/关注/收藏随外键级联删除） | ✔ admin |
 | GET | `/api/posts` | 首页信息流 / 条件筛选（分页） | 可选 |
 | GET | `/api/search` | 搜索帖子 | 可选 |
 | POST | `/api/posts` | 发布帖子（multipart，最多 9 张图） | ✔ |
@@ -136,13 +138,18 @@ curl http://127.0.0.1:8000/api/health
 | PATCH | `/api/admin/admins/{admin_id}/status` | 启用 / 禁用管理员 | ✔ **高级管理员** |
 | PATCH | `/api/admin/admins/{admin_id}/password` | 重置管理员密码 | ✔ **高级管理员** |
 | DELETE | `/api/admin/admins/{admin_id}` | 撤销管理员权限（降级为普通用户） | ✔ **高级管理员** |
+| GET | `/api/admin/users` | 用户列表（分页 + 关键字 / 角色 / 状态筛选） | ✔ admin |
+| GET | `/api/admin/users/{user_id}` | 用户详情（含发帖数 / 评论数） | ✔ admin |
+| PATCH | `/api/admin/users/{user_id}/status` | 启用 / 禁用用户（禁用后无法登录 App） | ✔ admin |
+| GET | `/api/admin/comments` | 全部评论（分页 + 关键字 / 帖子筛选，含所属帖子标题） | ✔ admin |
+| DELETE | `/api/comments/{comment_id}` | 删除违规评论（仅管理员，软删除 + 帖子评论数 -1） | ✔ admin |
 
 ### 角色与权限（users.role 三档）
 
 | 角色 | 值 | 能做什么 |
 |---|---|---|
 | 普通用户 | `user` | 只能使用 App（发帖、评论、点赞、收藏、关注） |
-| 管理员 | `admin` | 后台可管理贴吧板块（新增）、删除帖子、按帖查看评论等 |
+| 管理员 | `admin` | 后台可管理贴吧板块（新增 / 编辑 / 删除）、删除帖子、用户管理（列表 / 详情 / 禁用启用）、评论管理（全部评论 / 删除违规评论） |
 | **高级管理员** | `super_admin` | 在管理员权限之上，额外可**管理管理员账号**：新增、改角色、启用/禁用、重置密码、撤销权限 |
 
 安全护栏（后端强制，前端同步置灰）：
