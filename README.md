@@ -151,6 +151,17 @@ curl http://127.0.0.1:8000/api/health
 | GET | `/api/admin/comments` | 全部评论（分页 + 关键字 / 帖子筛选，含所属帖子标题） | ✔ admin |
 | DELETE | `/api/comments/{comment_id}` | 删除违规评论（仅管理员，软删除 + 帖子评论数 -1） | ✔ admin |
 
+### 静态资源（图片）
+
+| 路径 | 内容 | 是否持久 |
+|---|---|---|
+| `/static/avatars/*.png` | 头像图（随代码发布：内置 8 张 + 1 张默认图） | **持久**（在仓库里，重新部署不会丢） |
+| `/uploads/posts/...` | 用户上传的帖子图片 | 存实例磁盘，**重新部署会丢**（需挂 Persistent Disk） |
+
+> **头像规则**：`users.avatar` 只存图片地址（`/static/avatars/xxx.png` 或 http 图片链接）。
+> 传 emoji 之类的纯文本会被接口层拒绝（HTTP 422）；服务启动自检会**自动把历史数据里的 emoji 头像迁移成图片**（幂等，可反复执行）。
+> 头像图放后端而不是前端的原因：管理后台（另一个站点）与 App 需要共用同一份头像。
+
 ### 角色与权限（users.role 三档）
 
 | 角色 | 值 | 能做什么 |
