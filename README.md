@@ -132,6 +132,7 @@ curl http://127.0.0.1:8000/api/health
 | GET | `/api/users/me/posts` | 我的帖子 | ✔ |
 | GET | `/api/users/me/favorites` | 我的收藏 | ✔ |
 | PATCH | `/api/users/me` | 修改我的昵称 / 头像 | ✔ |
+| POST | `/api/users/me/avatar` | 上传自定义头像（multipart，字段名 `file`，上传即写库） | ✔ |
 | POST | `/api/posts/{post_id}/forward` | 转发帖子（转发数 +1） | ✔ |
 | POST | `/api/bars/{bar_id}/visit` | 记录足迹：我进过这个吧（幂等） | ✔ |
 | GET | `/api/users/me/footprints` | 我的足迹（角标 = 上次浏览后该吧新增帖数） | ✔ |
@@ -156,6 +157,7 @@ curl http://127.0.0.1:8000/api/health
 | 路径 | 内容 | 是否持久 |
 |---|---|---|
 | `/static/avatars/*.png` | 头像图（随代码发布：内置 8 张 + 1 张默认图） | **持久**（在仓库里，重新部署不会丢） |
+| `/uploads/avatars/...` | 用户**自己上传**的头像（`POST /api/users/me/avatar`） | 存实例磁盘，**重新部署会丢**（前端会回落到默认头像，要长期保存需挂 Persistent Disk） |
 | `/uploads/posts/...` | 用户上传的帖子图片 | 存实例磁盘，**重新部署会丢**（需挂 Persistent Disk） |
 
 > **头像规则**：`users.avatar` 只存图片地址（`/static/avatars/xxx.png` 或 http 图片链接）。

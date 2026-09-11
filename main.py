@@ -101,6 +101,7 @@ ALLOWED_IMAGE_EXT = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 #      例如 UPLOAD_DIR=/var/data/uploads ----
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", str(BASE_DIR / "uploads"))).expanduser()
 POST_IMAGE_DIR = UPLOAD_DIR / "posts"
+AVATAR_IMAGE_DIR = UPLOAD_DIR / "avatars"  # 用户自定义头像（上传的图片）
 
 PBKDF2_ITERATIONS = 200_000  # 密码哈希迭代次数（与 sql 种子数据一致）
 
@@ -461,6 +462,25 @@ def require_super_admin(user: dict = Depends(get_current_user)) -> dict:
 # =============================================================================
 def ensure_upload_dirs() -> None:
     POST_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+    AVATAR_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+async def save_avatar_image(file: UploadFile) -> str:
+    """保存用户上传的头像到 uploads/avatars/YYYYMM/，返回可访问的相对 URL"""
+    ensure_upload_dirs()
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in ALLOWED_IMAGE_EXT:
+        raise HTTPException(status_code=400, detail=f"不支持的图片格式：{ext or '未知'}")
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="图片内容为空")
+    if len(data) > MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=400, detail=f"头像图片不能超过 {MAX_IMAGE_MB}MB")
+    month_dir = AVATAR_IMAGE_DIR / datetime.now().strftime("%Y%m")
+    month_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"{uuid.uuid4().hex}{ext}"
+    (month_dir / filename).write_bytes(data)
+    return f"/uploads/avatars/{month_dir.name}/{filename}"
 
 
 async def save_post_images(files: list[UploadFile]) -> list[str]:
@@ -2200,6 +2220,25 @@ def update_me(body: ProfileIn, user: dict = Depends(get_current_user)):
         (user["id"],),
     )
     return ok(row, message="资料已更新")
+
+
+@app.post(
+    "/api/users/me/avatar",
+    tags=["用户"],
+    summary="上传自定义头像（multipart，字段名 file，上传后立即写库）",
+)
+async def upload_my_avatar(
+    file: UploadFile = File(..., description="头像图片文件，字段名 file"),
+    user: dict = Depends(get_current_user),
+):
+    # 保存图片 → 得到 /uploads/avatars/... 地址 → 直接更新 users.avatar（一步到位，前端不用再调一次改资料）
+    avatar_url = normalize_avatar(await save_avatar_image(file))
+    execute("UPDATE users SET avatar = %s WHERE id = %s", (avatar_url, user["id"]))
+    row = query_one(
+        "SELECT id, username, nickname, avatar, role, status FROM users WHERE id = %s",
+        (user["id"],),
+    )
+    return ok(row, message="头像已更新")
 
 
 # ------------------------------ 互动消息 ------------------------------

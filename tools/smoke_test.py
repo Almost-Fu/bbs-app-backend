@@ -70,6 +70,7 @@ EXPECTED_PATHS = {
     "/api/users/me/footprints",
     "/api/posts/{post_id}/forward",
     "/api/users/me",
+    "/api/users/me/avatar",
     "/api/users/me/notifications",
     "/api/users/me/notifications/unread",
     "/api/users/me/notifications/read",
@@ -762,6 +763,33 @@ def run_data_centralization_checks() -> None:
     status, res, _ = request("PATCH", "/api/users/me", body={"avatar": "🐼"}, token=tmp_token)
     check("改资料时头像传 emoji 也会被拒绝（422）", status == 422, str(res)[:200])
 
+    raw, ctype = build_multipart({}, [("file", "me.png", TINY_PNG)])
+    status, res, _ = request("POST", "/api/users/me/avatar", raw=raw, content_type=ctype, token=tmp_token)
+    new_avatar = ((res or {}).get("data") or {}).get("avatar") or ""
+    check(
+        "上传自定义头像成功（写入 /uploads/avatars）",
+        status == 200 and new_avatar.startswith("/uploads/avatars/"),
+        str(res)[:200],
+    )
+    status, res, _ = request("GET", "/api/auth/me", token=tmp_token)
+    check("上传后 /auth/me 返回新头像", status == 200 and res["data"]["avatar"] == new_avatar, str(res)[:160])
+
+    upload_status = 0
+    try:
+        with urllib.request.urlopen(BASE_URL + new_avatar, timeout=10) as resp:
+            upload_status = resp.status if resp.read(4) == b"\x89PNG" else 0
+    except urllib.error.HTTPError as err:
+        upload_status = err.code
+    check("上传的头像可通过 /uploads 静态访问", upload_status == 200, f"status={upload_status}")
+
+    raw, ctype = build_multipart({}, [("file", "note.txt", b"not an image")])
+    status, res, _ = request("POST", "/api/users/me/avatar", raw=raw, content_type=ctype, token=tmp_token)
+    check("上传非图片格式被拒（400）", status == 400, str(res)[:160])
+
+    raw, ctype = build_multipart({}, [("file", "me.png", TINY_PNG)])
+    status, res, _ = request("POST", "/api/users/me/avatar", raw=raw, content_type=ctype)
+    check("未登录上传头像 → 401", status == 401, str(res)[:160])
+
     # ---------- 4) 互动消息（点赞 / 回复 / @我） ----------
     status, res, _ = request("GET", "/api/users/me/notifications")
     check("未登录看互动消息 → 401", status == 401, str(res)[:200])
@@ -839,7 +867,15 @@ def run_data_centralization_checks() -> None:
 
     status, res, _ = request("GET", "/api/admin/users?page=1&pageSize=50", token=admin_token)
     rows = ((res or {}).get("data") or {}).get("list") or []
-    bad = [u["username"] for u in rows if not str(u.get("avatar") or "").startswith("/static/avatars/")]
+    bad = [
+        u["username"]
+        for u in rows
+        if not (
+            str(u.get("avatar") or "").startswith("/static/avatars/")
+            or str(u.get("avatar") or "").startswith("/uploads/avatars/")
+            or str(u.get("avatar") or "").startswith("http")
+        )
+    ]
     check("用户头像全部是图片地址（库里不再有 emoji）", status == 200 and rows and not bad, f"异常账号：{bad}")
 
     status, res, _ = request("GET", "/api/bars")
