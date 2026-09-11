@@ -182,8 +182,11 @@ def run_api_checks() -> None:
     status, res, _ = request("GET", "/api/bars", token=token)
     bars = (res or {}).get("data") or []
     check(
-        "贴吧列表返回数组且字段齐全",
-        status == 200 and bool(bars) and {"id", "name", "icon", "followed"} <= set(bars[0]),
+        "贴吧列表返回数组且字段齐全（已无 emoji 图标字段）",
+        status == 200
+        and bool(bars)
+        and {"id", "name", "img", "followed"} <= set(bars[0])
+        and "icon" not in bars[0],
         str(res)[:200],
     )
     if not bars:
@@ -548,7 +551,7 @@ def run_admin_backfill_checks() -> None:
     status, res, _ = request(
         "POST",
         "/api/bars",
-        body={"name": tmp_bar_name, "icon": "🧪", "intro": "临时吧", "owner": "冒烟", "sort": 999},
+        body={"name": tmp_bar_name, "intro": "临时吧", "owner": "冒烟", "sort": 999},
         token=super_token,
     )
     tmp_bar_id = ((res or {}).get("data") or {}).get("id")
@@ -559,7 +562,6 @@ def run_admin_backfill_checks() -> None:
         f"/api/bars/{tmp_bar_id}",
         body={
             "name": f"{tmp_bar_name}改",
-            "icon": "🧪",
             "image": None,
             "intro": "简介已改",
             "owner": "冒烟",
@@ -674,11 +676,12 @@ def run_data_centralization_checks() -> None:
     status, res, _ = request("GET", "/api/users/me/footprints", token=demo_token)
     data = (res or {}).get("data") or []
     check(
-        "足迹按最近浏览倒序、字段齐全",
+        "足迹按最近浏览倒序、字段齐全（已无 emoji 图标字段）",
         status == 200
         and [f["barId"] for f in data] == [3, 1]
         and data[0]["name"] == "游戏吧"
-        and {"badge", "img", "icon", "viewedAt"} <= set(data[0]),
+        and {"badge", "img", "viewedAt"} <= set(data[0])
+        and all("icon" not in f for f in data),
         str(data)[:200],
     )
 
@@ -840,11 +843,16 @@ def run_data_centralization_checks() -> None:
     check("用户头像全部是图片地址（库里不再有 emoji）", status == 200 and rows and not bad, f"异常账号：{bad}")
 
     status, res, _ = request("GET", "/api/bars")
-    bar_icons = {(b.get("icon") or "") for b in ((res or {}).get("data") or [])}
+    bars_now = (res or {}).get("data") or []
     check(
-        "吧图标仍是 emoji（本方案只改头像，符合预期）",
-        status == 200 and any(not str(i).startswith("/") for i in bar_icons),
-        str(sorted(bar_icons))[:120],
+        "贴吧已彻底去掉 emoji 图标（接口不再返回 icon 字段）",
+        status == 200 and bool(bars_now) and all("icon" not in b for b in bars_now),
+        str(bars_now[:1])[:160],
+    )
+    check(
+        "吧的形象仍由数据库的吧图提供（/static/images/bars/）",
+        status == 200 and all(str(b.get("img") or "").startswith("/static/images/bars/") for b in bars_now),
+        str(bars_now[:1])[:160],
     )
 
 

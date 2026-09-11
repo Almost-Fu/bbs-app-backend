@@ -696,9 +696,8 @@ class ProfileIn(BaseModel):
 
 
 class BarIn(BaseModel):
-    """管理员创建贴吧"""
+    """管理员创建 / 编辑贴吧（emoji 吧图标已废弃，不用再传 icon）"""
     name: str = Field(..., min_length=1, max_length=32, description="吧名，如 前端吧")
-    icon: str = Field("💬", max_length=16)
     image: Optional[str] = Field(None, max_length=255, description="吧图 URL，可空")
     intro: str = Field("", max_length=255, description="吧简介")
     owner: str = Field("官方", max_length=32, description="吧主昵称")
@@ -742,7 +741,7 @@ POST_SELECT_SQL = """
 SELECT p.id, p.bar_id, p.user_id, p.tag, p.title, p.content,
        p.like_count, p.comment_count, p.forward_count, p.view_count, p.is_top, p.created_at,
        u.nickname AS author, u.username AS author_username, u.avatar AS author_avatar,
-       b.name AS bar_name, b.icon AS bar_icon, b.image AS bar_image
+       b.name AS bar_name, b.image AS bar_image
   FROM posts p
   JOIN users u ON u.id = p.user_id
   JOIN bars  b ON b.id = p.bar_id
@@ -760,7 +759,6 @@ def post_to_dict(
         "id": row["id"],
         "barId": row["bar_id"],
         "barName": row["bar_name"],
-        "barIcon": row["bar_icon"],
         "barImg": row["bar_image"] or "",
         "tag": row["tag"],
         "title": row["title"],
@@ -799,11 +797,13 @@ def comment_to_dict(row: dict, liked: bool = False) -> dict:
 
 
 def bar_to_dict(row: dict, followed: bool = False, post_count: int = 0, follow_count: int = 0) -> dict:
-    """贴吧行 → 前端 bar 结构：{id, name, icon, img, desc, owner, posts, members, followed}"""
+    """贴吧行 → 前端 bar 结构：{id, name, img, desc, owner, posts, members, followed}
+
+    说明：emoji 吧图标（bars.icon）已废弃，吧的形象统一用 bars.image（吧图）。
+    """
     return {
         "id": row["id"],
         "name": row["name"],
-        "icon": row["icon"],
         "img": row["image"] or "",
         "desc": row["intro"],
         "owner": row["owner"],
@@ -966,7 +966,7 @@ def me(user: dict = Depends(get_current_user)):
 # =============================================================================
 # 贴吧列表/详情公共 SQL：顺带算出「帖子数 / 关注数」，前端吧头部直接用
 BAR_SELECT_SQL = """
-SELECT b.id, b.name, b.icon, b.image, b.intro, b.owner, b.sort,
+SELECT b.id, b.name, b.image, b.intro, b.owner, b.sort,
        (SELECT COUNT(*) FROM posts   p WHERE p.bar_id = b.id AND p.status = 1) AS post_count,
        (SELECT COUNT(*) FROM follows f WHERE f.bar_id = b.id)                   AS follow_count
   FROM bars b
@@ -1082,8 +1082,8 @@ def create_bar(body: BarIn, admin: dict = Depends(require_admin)):
     if query_one("SELECT id FROM bars WHERE name = %s", (name,)):
         raise HTTPException(status_code=400, detail="该贴吧已存在")
     bar_id = insert_returning_id(
-        "INSERT INTO bars (name, icon, image, intro, owner, sort) VALUES (%s, %s, %s, %s, %s, %s)",
-        (name, body.icon, body.image, body.intro, body.owner, body.sort),
+        "INSERT INTO bars (name, image, intro, owner, sort) VALUES (%s, %s, %s, %s, %s)",
+        (name, body.image, body.intro, body.owner, body.sort),
     )
     row = query_one(BAR_SELECT_SQL + " WHERE b.id = %s", (bar_id,))
     return ok(bar_to_dict(row, False, 0, 0), message="贴吧创建成功")
@@ -1741,9 +1741,9 @@ def update_bar(bar_id: int, body: BarIn, admin: dict = Depends(require_admin)):
         raise HTTPException(status_code=400, detail="已存在同名贴吧")
 
     execute(
-        """UPDATE bars SET name = %s, icon = %s, image = %s, intro = %s, owner = %s, sort = %s
+        """UPDATE bars SET name = %s, image = %s, intro = %s, owner = %s, sort = %s
             WHERE id = %s""",
-        (name, body.icon, body.image, body.intro, body.owner, body.sort, bar_id),
+        (name, body.image, body.intro, body.owner, body.sort, bar_id),
     )
     updated = query_one(BAR_SELECT_SQL + " WHERE b.id = %s", (bar_id,))
     return ok(
@@ -1986,6 +1986,21 @@ DEMO_AVATAR_BY_USERNAME = {
 DEMO_EXTRA_PASSWORD = "demo123456"
 
 
+def migrate_bars_drop_icon() -> int:
+    """删除 bars.icon 列（emoji 吧图标已废弃，吧的形象统一用 bars.image 吧图）
+
+    幂等：列不存在就什么都不做，可反复执行。
+    """
+    exists = query_value(
+        """SELECT COUNT(*) AS c FROM information_schema.columns
+            WHERE table_schema = DATABASE() AND table_name = 'bars' AND column_name = 'icon'"""
+    )
+    if not exists:
+        return 0
+    execute("ALTER TABLE bars DROP COLUMN icon")
+    return 1
+
+
 def migrate_avatars() -> int:
     """把库里的 emoji 头像换成本地头像图（幂等，可反复执行）
 
@@ -2100,6 +2115,10 @@ def ensure_app_tables_and_seed() -> str:
     if migrated:
         notes.append(f"头像换成图片（{migrated} 处）")
 
+    # 5) 贴吧：删掉 emoji 图标列（吧的形象统一用 bars.image 吧图）
+    if migrate_bars_drop_icon():
+        notes.append("删除 bars.icon 列（emoji 吧图标已废弃）")
+
     if notes:
         return "表结构就绪（footprints, notify_read）；启动补数据：" + "、".join(notes)
     return "表结构就绪（footprints, notify_read）；演示数据已是最新，无需补充"
@@ -2124,7 +2143,7 @@ def my_footprints(
     user: dict = Depends(get_current_user),
 ):
     rows = query_all(
-        """SELECT f.bar_id, f.viewed_at, b.name, b.icon, b.image,
+        """SELECT f.bar_id, f.viewed_at, b.name, b.image,
                   (SELECT COUNT(*) FROM posts p
                     WHERE p.bar_id = f.bar_id AND p.status = 1
                       AND p.created_at > f.viewed_at) AS new_count
@@ -2141,7 +2160,6 @@ def my_footprints(
                 "id": r["bar_id"],
                 "barId": r["bar_id"],
                 "name": r["name"],
-                "icon": r["icon"],
                 "img": r["image"] or "",
                 # 角标 = 我上次逛完之后这个吧新增了几篇帖子（未读感，与前端原设计一致）
                 "badge": int(r["new_count"] or 0),

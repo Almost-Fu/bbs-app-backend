@@ -53,8 +53,7 @@ CREATE TABLE `users` (
 CREATE TABLE `bars` (
   `id`         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '贴吧ID',
   `name`       VARCHAR(32)     NOT NULL                COMMENT '吧名，如 前端吧',
-  `icon`       VARCHAR(16)     NOT NULL DEFAULT '💬'   COMMENT '吧图标（emoji，前端 bar.icon）',
-  `image`      VARCHAR(255)    DEFAULT NULL            COMMENT '吧图 URL（前端 bar.img；前端也可继续用本地图）',
+  `image`      VARCHAR(255)    DEFAULT NULL            COMMENT '吧图 URL（前端 bar.img；emoji 吧图标已废弃）',
   `intro`      VARCHAR(255)    NOT NULL DEFAULT ''     COMMENT '吧简介（前端 bar.desc）',
   `owner`      VARCHAR(32)     NOT NULL DEFAULT '官方' COMMENT '吧主昵称（前端 bar.owner）',
   `sort`       INT             NOT NULL DEFAULT 0      COMMENT '排序值，越小越靠前',
@@ -217,24 +216,25 @@ INSERT INTO `users` (`id`, `username`, `password_hash`, `nickname`, `avatar`, `r
 -- 高级管理员：唯一拥有「管理员账号管理」权限的角色（密码 super123456）
 (6, 'superadmin', 'pbkdf2_sha256$200000$5928dd9a39cc4123a74609201524efbd$64b71fd237337e2b138e32c402d178a1ea2574fc4d7413478eb1e828dff65853', '高级管理员', '/static/avatars/avatar-6.png', 'super_admin');
 
--- 贴吧：16 个，id / 名称 / icon 与前端 store.js 的 BARS 一一对应
-INSERT INTO `bars` (`id`, `name`, `icon`, `image`, `intro`, `owner`, `sort`) VALUES
-(1,  '前端吧', '💻', NULL, '前端开发交流：HTML/CSS/JS/Vue/React', '阿华', 1),
-(2,  '美食吧', '🍜', NULL, '探店、菜谱、深夜放毒', '食堂大妈', 2),
-(3,  '游戏吧', '🎮', NULL, '开黑、攻略、版本讨论', '手速怪', 3),
-(4,  '电影吧', '🎬', NULL, '影评、片单、冷门佳作', '放映员', 4),
-(5,  '读书吧', '📚', NULL, '书单、书评、一起读书', '书虫', 5),
-(6,  '音乐吧', '🎵', NULL, '歌单、乐评、乐器交流', '耳机党', 6),
-(7,  '足球吧', '⚽', NULL, '赛事、转会、战术分析', '老球迷', 7),
-(8,  '科技吧', '🚀', NULL, '数码、硬件、AI 前沿', '极客', 8),
-(9,  '摄影吧', '📷', NULL, '出片、后期、器材讨论', '快门', 9),
-(10, '吉他吧', '🎸', NULL, '指弹、弹唱、装备交流', '六弦', 10),
-(11, '养猫吧', '🐱', NULL, '铲屎官日常、养猫经验', '猫奴', 11),
-(12, '跑步吧', '🏃', NULL, '跑步打卡、马拉松、配速', '跑者', 12),
-(13, '烘焙吧', '🍰', NULL, '蛋糕、面包、烤箱食谱', '烤箱前', 13),
-(14, '手工吧', '🔨', NULL, '木工、羊毛毡、手作教程', '手艺人', 14),
-(15, '钓鱼吧', '🎣', NULL, '钓点、装备、渔获分享', '空军司令', 15),
-(16, '旅游吧', '✈️', NULL, '攻略、穷游、风景大片', '背包客', 16);
+-- 贴吧：16 个，id / 名称与前端 store.js 的 BARS 一一对应
+-- （emoji 吧图标已废弃：表里没有 icon 列，吧的形象统一用 image 吧图）
+INSERT INTO `bars` (`id`, `name`, `image`, `intro`, `owner`, `sort`) VALUES
+(1,  '前端吧', NULL, '前端开发交流：HTML/CSS/JS/Vue/React', '阿华', 1),
+(2,  '美食吧', NULL, '探店、菜谱、深夜放毒', '食堂大妈', 2),
+(3,  '游戏吧', NULL, '开黑、攻略、版本讨论', '手速怪', 3),
+(4,  '电影吧', NULL, '影评、片单、冷门佳作', '放映员', 4),
+(5,  '读书吧', NULL, '书单、书评、一起读书', '书虫', 5),
+(6,  '音乐吧', NULL, '歌单、乐评、乐器交流', '耳机党', 6),
+(7,  '足球吧', NULL, '赛事、转会、战术分析', '老球迷', 7),
+(8,  '科技吧', NULL, '数码、硬件、AI 前沿', '极客', 8),
+(9,  '摄影吧', NULL, '出片、后期、器材讨论', '快门', 9),
+(10, '吉他吧', NULL, '指弹、弹唱、装备交流', '六弦', 10),
+(11, '养猫吧', NULL, '铲屎官日常、养猫经验', '猫奴', 11),
+(12, '跑步吧', NULL, '跑步打卡、马拉松、配速', '跑者', 12),
+(13, '烘焙吧', NULL, '蛋糕、面包、烤箱食谱', '烤箱前', 13),
+(14, '手工吧', NULL, '木工、羊毛毡、手作教程', '手艺人', 14),
+(15, '钓鱼吧', NULL, '钓点、装备、渔获分享', '空军司令', 15),
+(16, '旅游吧', NULL, '攻略、穷游、风景大片', '背包客', 16);
 
 -- 帖子：5 条，分布在不同吧；created_at 用相对时间，便于前端展示「3小时前 / 昨天」等
 INSERT INTO `posts` (`id`, `bar_id`, `user_id`, `tag`, `title`, `content`, `like_count`, `comment_count`, `forward_count`, `view_count`, `created_at`) VALUES

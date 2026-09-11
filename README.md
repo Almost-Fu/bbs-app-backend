@@ -193,7 +193,7 @@ curl http://127.0.0.1:8000/api/health
 2. **登录态**：登录/注册拿到的 `token` 存本地，后续请求带上
    `header: { Authorization: 'Bearer ' + token }`。
 3. **字段名**：接口返回的字段名与前端 `utils/store.js` 里的 `posts / comments / bars` 完全一致
-   （`barId` / `barName` / `barIcon` / `authorAvatar` / `commentCount` / `liked` / `favorited` / `followed` …），
+   （`barId` / `barName` / `barImg` / `authorAvatar` / `commentCount` / `liked` / `favorited` / `followed` …），
    前端只需把原来的 Storage 读写换成请求接口。
 4. **发布带图**：`uni.uploadFile` 的 `formData` 传 `barId / title / content / tag`，
    文件字段名（`name`）用 **files**，可多选；服务端落盘后返回 `/uploads/posts/...`，
