@@ -38,7 +38,7 @@ CREATE TABLE `users` (
   `username`      VARCHAR(32)     NOT NULL                COMMENT '登录用户名（唯一）',
   `password_hash` VARCHAR(255)    NOT NULL                COMMENT '密码哈希（PBKDF2-SHA256：pbkdf2_sha256$迭代次数$盐$哈希）',
   `nickname`      VARCHAR(32)     NOT NULL DEFAULT ''     COMMENT '昵称（前端展示的 author）',
-  `avatar`        VARCHAR(255)    NOT NULL DEFAULT '🙂'   COMMENT '头像：前端用 emoji 字符，也兼容图片 URL',
+  `avatar`        VARCHAR(255)    NOT NULL DEFAULT '/static/avatars/default.png' COMMENT '头像图片地址（后端 /static/avatars 下的图片，或 http URL）',
   `role`          ENUM('user','admin','super_admin') NOT NULL DEFAULT 'user' COMMENT '角色：user 普通用户 / admin 管理员 / super_admin 高级管理员',
   `status`        TINYINT         NOT NULL DEFAULT 1      COMMENT '状态：1 正常 / 0 禁用',
   `created_at`    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '注册时间',
@@ -207,15 +207,15 @@ SET FOREIGN_KEY_CHECKS = 1;
 -- 演示账号：admin / admin123456（管理员）、demo / demo123456（普通用户，其余演示用户同密码）
 -- =============================================================================
 
--- 用户：1 高级管理员 + 1 管理员 + 4 普通用户
+-- 用户：1 高级管理员 + 1 管理员 + 4 普通用户（头像统一用后端 /static/avatars 下的图片）
 INSERT INTO `users` (`id`, `username`, `password_hash`, `nickname`, `avatar`, `role`) VALUES
-(1, 'admin', 'pbkdf2_sha256$200000$723e821f4c68a0c3bd456a8bb65fa7a9$091ab8264ef5170edadbe92fb4dfc1d7da4fe7af601c2412c5c909981857873a', '吧务管理', '🛡️', 'admin'),
-(2, 'demo', 'pbkdf2_sha256$200000$637bebcae8aedab5a6a7a7c2181d9f4a$ff07605227ed94319cb0a20f673850f8f125de61277686d137ae15672d55ff7a', '测试用户', '🙂', 'user'),
-(3, 'frontend_girl', 'pbkdf2_sha256$200000$637bebcae8aedab5a6a7a7c2181d9f4a$ff07605227ed94319cb0a20f673850f8f125de61277686d137ae15672d55ff7a', '前端小白', '🧑‍💻', 'user'),
-(4, 'foodie', 'pbkdf2_sha256$200000$637bebcae8aedab5a6a7a7c2181d9f4a$ff07605227ed94319cb0a20f673850f8f125de61277686d137ae15672d55ff7a', '干饭人', '🍜', 'user'),
-(5, 'gamer', 'pbkdf2_sha256$200000$637bebcae8aedab5a6a7a7c2181d9f4a$ff07605227ed94319cb0a20f673850f8f125de61277686d137ae15672d55ff7a', '摸鱼达人', '🎮', 'user'),
+(1, 'admin', 'pbkdf2_sha256$200000$723e821f4c68a0c3bd456a8bb65fa7a9$091ab8264ef5170edadbe92fb4dfc1d7da4fe7af601c2412c5c909981857873a', '吧务管理', '/static/avatars/avatar-1.png', 'admin'),
+(2, 'demo', 'pbkdf2_sha256$200000$637bebcae8aedab5a6a7a7c2181d9f4a$ff07605227ed94319cb0a20f673850f8f125de61277686d137ae15672d55ff7a', '测试用户', '/static/avatars/avatar-2.png', 'user'),
+(3, 'frontend_girl', 'pbkdf2_sha256$200000$637bebcae8aedab5a6a7a7c2181d9f4a$ff07605227ed94319cb0a20f673850f8f125de61277686d137ae15672d55ff7a', '前端小白', '/static/avatars/avatar-3.png', 'user'),
+(4, 'foodie', 'pbkdf2_sha256$200000$637bebcae8aedab5a6a7a7c2181d9f4a$ff07605227ed94319cb0a20f673850f8f125de61277686d137ae15672d55ff7a', '干饭人', '/static/avatars/avatar-4.png', 'user'),
+(5, 'gamer', 'pbkdf2_sha256$200000$637bebcae8aedab5a6a7a7c2181d9f4a$ff07605227ed94319cb0a20f673850f8f125de61277686d137ae15672d55ff7a', '摸鱼达人', '/static/avatars/avatar-5.png', 'user'),
 -- 高级管理员：唯一拥有「管理员账号管理」权限的角色（密码 super123456）
-(6, 'superadmin', 'pbkdf2_sha256$200000$5928dd9a39cc4123a74609201524efbd$64b71fd237337e2b138e32c402d178a1ea2574fc4d7413478eb1e828dff65853', '高级管理员', '👑', 'super_admin');
+(6, 'superadmin', 'pbkdf2_sha256$200000$5928dd9a39cc4123a74609201524efbd$64b71fd237337e2b138e32c402d178a1ea2574fc4d7413478eb1e828dff65853', '高级管理员', '/static/avatars/avatar-6.png', 'super_admin');
 
 -- 贴吧：16 个，id / 名称 / icon 与前端 store.js 的 BARS 一一对应
 INSERT INTO `bars` (`id`, `name`, `icon`, `image`, `intro`, `owner`, `sort`) VALUES

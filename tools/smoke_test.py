@@ -23,7 +23,6 @@ import urllib.error
 import urllib.request
 import uuid
 from pathlib import Path
-
 BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE_DIR))
 
@@ -158,10 +157,16 @@ def run_api_checks() -> None:
 
     # --- 注册 / 登录 / 鉴权 ---
     status, res, _ = request(
-        "POST", "/api/auth/register",
-        body={"username": username, "password": password, "nickname": f"冒烟{suffix}", "avatar": "🧪"},
+        "POST",
+        "/api/auth/register",
+        body={"username": username, "password": password, "nickname": f"冒烟{suffix}"},
     )
     check("注册成功并返回 token", status == 200 and res.get("code") == 0 and res["data"].get("token"), str(res))
+    check(
+        "注册后头像是图片地址（不再是 emoji）",
+        ((res.get("data") or {}).get("user") or {}).get("avatar") == app_module.DEFAULT_AVATAR,
+        str(((res.get("data") or {}).get("user")))[:200],
+    )
 
     status, res, _ = request("POST", "/api/auth/login", body={"username": username, "password": password})
     check("登录成功并返回 token", status == 200 and res.get("code") == 0 and res["data"].get("token"), str(res))
@@ -351,7 +356,7 @@ def run_super_admin_checks() -> None:
             "username": new_username,
             "password": "smoke123456",
             "nickname": "冒烟管理员",
-            "avatar": "🧪",
+            "avatar": app_module.DEFAULT_AVATAR,
             "role": "admin",
         },
         token=super_token,
@@ -720,19 +725,20 @@ def run_data_centralization_checks() -> None:
     status, res, _ = request(
         "POST",
         "/api/auth/register",
-        body={"username": tmp_username, "password": "tmp123456", "nickname": "待改名", "avatar": "🙂"},
+        body={"username": tmp_username, "password": "tmp123456", "nickname": "待改名"},
     )
     tmp_token = ((res or {}).get("data") or {}).get("token")
     check("注册临时用户（改资料用）", bool(tmp_token), str(res)[:200])
 
+    tmp_avatar = app_module.AVATAR_OPTIONS[2]
     status, res, _ = request(
-        "PATCH", "/api/users/me", body={"nickname": "改过的昵称", "avatar": "🐼"}, token=tmp_token
+        "PATCH", "/api/users/me", body={"nickname": "改过的昵称", "avatar": tmp_avatar}, token=tmp_token
     )
     check(
         "改昵称 + 头像成功",
         status == 200
         and (res.get("data") or {}).get("nickname") == "改过的昵称"
-        and (res.get("data") or {}).get("avatar") == "🐼",
+        and (res.get("data") or {}).get("avatar") == tmp_avatar,
         str(res)[:200],
     )
     status, res, _ = request("GET", "/api/auth/me", token=tmp_token)
@@ -741,6 +747,17 @@ def run_data_centralization_checks() -> None:
     check("昵称与头像都不传 → 400", status == 400, str(res)[:200])
     status, res, _ = request("PATCH", "/api/users/me", body={"nickname": "无 token"})
     check("未登录改资料 → 401", status == 401, str(res)[:200])
+
+    # 头像必须是图片地址：emoji 一律拒绝，保证数据库里永远不出现表情字符
+    status, res, _ = request(
+        "POST",
+        "/api/auth/register",
+        body={"username": f"emoji_{uuid.uuid4().hex[:6]}", "password": "tmp123456", "avatar": "😀"},
+    )
+    check("注册时头像传 emoji 会被拒绝（422）", status == 422, str(res)[:200])
+
+    status, res, _ = request("PATCH", "/api/users/me", body={"avatar": "🐼"}, token=tmp_token)
+    check("改资料时头像传 emoji 也会被拒绝（422）", status == 422, str(res)[:200])
 
     # ---------- 4) 互动消息（点赞 / 回复 / @我） ----------
     status, res, _ = request("GET", "/api/users/me/notifications")
@@ -803,6 +820,32 @@ def run_data_centralization_checks() -> None:
     request("POST", "/api/posts/4/comments", body={"text": "已读之后的新评论"}, token=admin_token)
     status, res, _ = request("GET", "/api/users/me/notifications/unread", token=demo_token)
     check("标记后再有新互动 → 未读数回到 1", status == 200 and res["data"]["unreadCount"] == 1, str(res)[:200])
+
+    # ---------- 5) 头像：库里只有图片地址，没有 emoji ----------
+    png_status, png_head = 0, b""
+    try:
+        with urllib.request.urlopen(BASE_URL + app_module.DEFAULT_AVATAR, timeout=10) as resp:
+            png_status, png_head = resp.status, resp.read(8)
+    except urllib.error.HTTPError as err:
+        png_status = err.code
+    check(
+        "静态头像图可访问（/static 已挂载）",
+        png_status == 200 and png_head.startswith(b"\x89PNG"),
+        f"status={png_status}",
+    )
+
+    status, res, _ = request("GET", "/api/admin/users?page=1&pageSize=50", token=admin_token)
+    rows = ((res or {}).get("data") or {}).get("list") or []
+    bad = [u["username"] for u in rows if not str(u.get("avatar") or "").startswith("/static/avatars/")]
+    check("用户头像全部是图片地址（库里不再有 emoji）", status == 200 and rows and not bad, f"异常账号：{bad}")
+
+    status, res, _ = request("GET", "/api/bars")
+    bar_icons = {(b.get("icon") or "") for b in ((res or {}).get("data") or [])}
+    check(
+        "吧图标仍是 emoji（本方案只改头像，符合预期）",
+        status == 200 and any(not str(i).startswith("/") for i in bar_icons),
+        str(sorted(bar_icons))[:120],
+    )
 
 
 # ---------------------------------------------------------------------------

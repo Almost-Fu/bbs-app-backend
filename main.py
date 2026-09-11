@@ -45,7 +45,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # =============================================================================
 # 1. 配置（全部走环境变量：本地读 .env，云端读 Render 的 Environment Variables）
@@ -117,6 +117,19 @@ ROLE_TEXT = {
     ROLE_ADMIN: "管理员",
     ROLE_SUPER_ADMIN: "高级管理员",
 }
+
+# ---- 头像：统一使用后端 /static/avatars 下的图片 ----
+#   为什么要放后端：管理后台（Vercel）与 App（H5/APK）是两个站点，头像图挂在后端才能被双方共用；
+#   图片随代码一起发布（不是上传的），因此不会因 Render 实例重启而丢失。
+DEFAULT_AVATAR = "/static/avatars/default.png"
+AVATAR_OPTIONS = [f"/static/avatars/avatar-{i}.png" for i in range(1, 9)] + [DEFAULT_AVATAR]
+
+
+def avatar_for_user(user_id: Optional[int]) -> str:
+    """按用户 id 稳定分配一张头像（同一个用户每次拿到的都一样）"""
+    if not user_id:
+        return DEFAULT_AVATAR
+    return AVATAR_OPTIONS[(int(user_id) - 1) % len(AVATAR_OPTIONS)]
 
 
 def db_error_to_http(exc: pymysql.MySQLError) -> HTTPException:
@@ -588,6 +601,12 @@ app.add_middleware(
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
+# ---- 随代码发布的静态资源（头像图等）：/static/avatars/*.png ----
+#   与 /uploads 的区别：这些文件在仓库里，重新部署不会丢；头像就存它们的相对路径。
+STATIC_DIR = BASE_DIR / "static"
+STATIC_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
 
 # ---- 统一响应体：{code, message, data}；成功 code=0，失败 code 取 HTTP 状态码 ----
 def ok(data: Any = None, message: str = "ok") -> dict:
@@ -630,11 +649,29 @@ async def unhandled_exception_handler(request, exc: Exception):
 # =============================================================================
 # 8. 请求模型（Pydantic）
 # =============================================================================
+def normalize_avatar(value: Optional[str]) -> str:
+    """头像必须是图片地址：/static/... 相对路径，或 http(s) / data URL；空值用默认头像
+
+    这样数据库里永远只会有图片地址，不会再写进 emoji（emoji 传进来会直接 422）。
+    """
+    avatar = (value or "").strip()
+    if not avatar:
+        return DEFAULT_AVATAR
+    if "/" in avatar or avatar.lower().startswith(("http", "data:")):
+        return avatar
+    raise ValueError("头像必须是图片地址，例如 /static/avatars/avatar-1.png 或 http 图片链接")
+
+
 class RegisterIn(BaseModel):
     username: str = Field(..., min_length=2, max_length=20, description="登录用户名（唯一）")
     password: str = Field(..., min_length=6, max_length=32, description="密码（至少 6 位）")
     nickname: str = Field("", max_length=20, description="昵称，留空则用用户名")
-    avatar: str = Field("🙂", max_length=255, description="头像 emoji 或图片地址")
+    avatar: str = Field(DEFAULT_AVATAR, max_length=255, description="头像图片地址（默认用内置头像图）")
+
+    @field_validator("avatar")
+    @classmethod
+    def _check_avatar(cls, v: str) -> str:
+        return normalize_avatar(v)
 
 
 class LoginIn(BaseModel):
@@ -650,7 +687,12 @@ class CommentIn(BaseModel):
 class ProfileIn(BaseModel):
     """修改自己的资料（昵称 / 头像）：两项都可选，但不能都不传"""
     nickname: Optional[str] = Field(None, min_length=1, max_length=20, description="昵称")
-    avatar: Optional[str] = Field(None, min_length=1, max_length=255, description="头像 emoji 或图片地址")
+    avatar: Optional[str] = Field(None, min_length=1, max_length=255, description="头像图片地址")
+
+    @field_validator("avatar")
+    @classmethod
+    def _check_avatar(cls, v: Optional[str]) -> Optional[str]:
+        return None if v is None else normalize_avatar(v)
 
 
 class BarIn(BaseModel):
@@ -668,7 +710,12 @@ class AdminCreateIn(BaseModel):
     username: str = Field(..., min_length=2, max_length=20, description="登录用户名（唯一）")
     password: str = Field(..., min_length=6, max_length=32, description="初始密码（至少 6 位）")
     nickname: str = Field("", max_length=20, description="昵称，留空则用用户名")
-    avatar: str = Field("🛡️", max_length=255, description="头像 emoji")
+    avatar: str = Field(DEFAULT_AVATAR, max_length=255, description="头像图片地址")
+
+    @field_validator("avatar")
+    @classmethod
+    def _check_avatar(cls, v: str) -> str:
+        return normalize_avatar(v)
     role: str = Field(ROLE_ADMIN, description="角色：admin 管理员 / super_admin 高级管理员")
 
 
@@ -882,7 +929,7 @@ def register(body: RegisterIn):
     user_id = insert_returning_id(
         """INSERT INTO users (username, password_hash, nickname, avatar, role)
            VALUES (%s, %s, %s, %s, %s)""",
-        (username, hash_password(body.password), nickname, body.avatar or "🙂", "user"),
+        (username, hash_password(body.password), nickname, body.avatar or DEFAULT_AVATAR, "user"),
     )
     user = query_one(
         "SELECT id, username, nickname, avatar, role FROM users WHERE id = %s", (user_id,)
@@ -1858,8 +1905,8 @@ CREATE TABLE IF NOT EXISTS `notify_read` (
 #   与前端 utils/store.js 的 DEFAULT_POSTS 第 6/7/8 条一一对应：标题 / 正文 / 标签 / 作者 / 图片一致
 #   前端把 likes 数字当热度展示，这里沿用同一映射：前端的 likes 数值 → view_count
 DEMO_EXTRA_USERS = [
-    ("coder", "代码搬运工", "👧"),
-    ("reader", "读书人", "📖"),
+    ("coder", "代码搬运工", "/static/avatars/avatar-7.png"),
+    ("reader", "读书人", "/static/avatars/avatar-8.png"),
 ]
 
 DEMO_EXTRA_POSTS = [
@@ -1924,7 +1971,48 @@ BAR_IMAGES = {
     16: "/static/images/bars/旅游.jpg",
 }
 
+# 演示 / 内置账号 → 固定头像图（让每个账号的头像各不相同）
+DEMO_AVATAR_BY_USERNAME = {
+    "admin": "/static/avatars/avatar-1.png",
+    "demo": "/static/avatars/avatar-2.png",
+    "frontend_girl": "/static/avatars/avatar-3.png",
+    "foodie": "/static/avatars/avatar-4.png",
+    "gamer": "/static/avatars/avatar-5.png",
+    "superadmin": "/static/avatars/avatar-6.png",
+    "coder": "/static/avatars/avatar-7.png",
+    "reader": "/static/avatars/avatar-8.png",
+}
+
 DEMO_EXTRA_PASSWORD = "demo123456"
+
+
+def migrate_avatars() -> int:
+    """把库里的 emoji 头像换成本地头像图（幂等，可反复执行）
+
+    · 只处理"看起来不是图片地址"的值（既不含 `/` 也不以 http/data 开头），
+      因此已经换成图片的行、以及用户自己填的外部图片 URL 都不会被动
+    · 顺手把 users.avatar 列的默认值从 emoji 改成图片路径（只改默认值，不动数据）
+    """
+    changed = 0
+    for row in query_all("SELECT id, username, avatar FROM users"):
+        avatar = str(row["avatar"] or "").strip()
+        if "/" in avatar or avatar.lower().startswith(("http", "data:")):
+            continue
+        target = DEMO_AVATAR_BY_USERNAME.get(row["username"]) or avatar_for_user(row["id"])
+        execute("UPDATE users SET avatar = %s WHERE id = %s", (target, row["id"]))
+        changed += 1
+
+    column_default = query_value(
+        """SELECT COLUMN_DEFAULT AS c FROM information_schema.columns
+            WHERE table_schema = DATABASE() AND table_name = 'users' AND column_name = 'avatar'"""
+    )
+    if column_default and "/" not in str(column_default):
+        execute(
+            "ALTER TABLE users MODIFY avatar VARCHAR(255) NOT NULL "
+            f"DEFAULT '{DEFAULT_AVATAR}' COMMENT '头像：图片地址（/static/avatars/xxx.png 或 http URL）'"
+        )
+        changed += 1
+    return changed
 
 
 def ensure_app_tables_and_seed() -> str:
@@ -2006,6 +2094,11 @@ def ensure_app_tables_and_seed() -> str:
             "UPDATE bars SET image = %s WHERE id = %s AND (image IS NULL OR image = '')",
             (img, bar_id),
         )
+
+    # 4) 头像：把历史数据里的 emoji 换成本地头像图（幂等）
+    migrated = migrate_avatars()
+    if migrated:
+        notes.append(f"头像换成图片（{migrated} 处）")
 
     if notes:
         return "表结构就绪（footprints, notify_read）；启动补数据：" + "、".join(notes)
