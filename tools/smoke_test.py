@@ -60,6 +60,12 @@ EXPECTED_PATHS = {
     "/api/admin/admins/{admin_id}/status",
     "/api/admin/admins/{admin_id}/role",
     "/api/admin/admins/{admin_id}/password",
+    # 后台管理补全：用户管理 / 全部评论
+    "/api/admin/users",
+    "/api/admin/users/{user_id}",
+    "/api/admin/users/{user_id}/status",
+    "/api/admin/comments",
+    "/api/comments/{comment_id}",
 }
 
 FAILED = []
@@ -458,6 +464,152 @@ def run_super_admin_checks() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 后台管理补全接口测试（用户管理 / 贴吧编辑与删除 / 全部评论与删除评论）
+#   原则：自建数据、自清理，不修改演示账号、演示帖子与演示贴吧
+# ---------------------------------------------------------------------------
+def run_admin_backfill_checks() -> None:
+    status, res, admin_token = login_token("admin", "admin123456")
+    check("管理员 admin 登录成功（后台补全用例）", status == 200 and bool(admin_token), str(res)[:200])
+    if not admin_token:
+        return
+    status, res, user_token = login_token("demo", "demo123456")
+    check("普通用户 demo 登录成功（用于权限对比）", status == 200 and bool(user_token), str(res)[:200])
+    status, res, super_token = login_token(SUPER_ADMIN_USERNAME, SUPER_ADMIN_PASSWORD)
+
+    # ---------- 1) 用户管理 ----------
+    status, res, _ = request("GET", "/api/admin/users", token=user_token)
+    check("普通用户访问用户管理被拒（403）", status == 403, str(res)[:200])
+
+    status, res, _ = request("GET", "/api/admin/users?page=1&pageSize=50", token=admin_token)
+    data = (res or {}).get("data") or {}
+    names = {item["username"] for item in data.get("list", [])}
+    first = (data.get("list") or [{}])[0]
+    check(
+        "用户列表返回分页结构且含演示账号",
+        status == 200 and {"superadmin", "admin", "demo"} <= names,
+        str(res)[:200],
+    )
+    check(
+        "用户项含 roleText / statusText / postCount",
+        {"roleText", "statusText", "postCount", "commentCount"} <= set(first),
+        str(first)[:200],
+    )
+
+    status, res, _ = request("GET", "/api/admin/users?keyword=demo", token=admin_token)
+    check("按关键字筛选用户可用", status == 200 and any(u["username"] == "demo" for u in res["data"]["list"]), str(res)[:200])
+    status, res, _ = request("GET", "/api/admin/users?role=super_admin", token=admin_token)
+    check("按角色筛选用户可用", status == 200 and all(u["role"] == "super_admin" for u in res["data"]["list"]), str(res)[:200])
+    status, res, _ = request("GET", "/api/admin/users?role=boss", token=admin_token)
+    check("非法角色被拒（400）", status == 400, str(res)[:200])
+
+    demo_id = next((u["id"] for u in data.get("list", []) if u["username"] == "demo"), None)
+    status, res, _ = request("GET", f"/api/admin/users/{demo_id}", token=admin_token)
+    check("用户详情可读", status == 200 and res["data"]["username"] == "demo", str(res)[:200])
+
+    # 禁用 / 启用：注册一个临时用户来测（不碰演示账号）
+    tmp_username = f"perm_{uuid.uuid4().hex[:6]}"
+    status, res, _ = request(
+        "POST",
+        "/api/auth/register",
+        body={"username": tmp_username, "password": "tmp123456", "nickname": "禁用测试"},
+    )
+    tmp_id = ((res or {}).get("data") or {}).get("user", {}).get("id")
+    check("注册临时用户成功", status == 200 and bool(tmp_id), str(res)[:200])
+
+    status, res, _ = request("PATCH", f"/api/admin/users/{tmp_id}/status", body={"status": 0}, token=admin_token)
+    check("禁用用户成功", status == 200 and res["data"]["status"] == 0, str(res)[:200])
+    status, res, _ = request("POST", "/api/auth/login", body={"username": tmp_username, "password": "tmp123456"})
+    check("被禁用用户无法登录（403）", status == 403, str(res)[:200])
+    status, res, _ = request("PATCH", f"/api/admin/users/{tmp_id}/status", body={"status": 1}, token=admin_token)
+    check("重新启用用户成功", status == 200 and res["data"]["status"] == 1, str(res)[:200])
+    status, res, _ = request("POST", "/api/auth/login", body={"username": tmp_username, "password": "tmp123456"})
+    check("启用后可正常登录", status == 200, str(res)[:200])
+
+    status, res, _ = request("GET", "/api/auth/me", token=admin_token)
+    my_id = (res or {}).get("data", {}).get("id")
+    status, res, _ = request("PATCH", f"/api/admin/users/{my_id}/status", body={"status": 0}, token=admin_token)
+    check("不能禁用自己的账号（400）", status == 400, str(res)[:200])
+
+    # ---------- 2) 贴吧编辑 / 删除（自建吧，测完删掉） ----------
+    tmp_bar_name = f"冒烟吧{uuid.uuid4().hex[:4]}"
+    status, res, _ = request(
+        "POST",
+        "/api/bars",
+        body={"name": tmp_bar_name, "icon": "🧪", "intro": "临时吧", "owner": "冒烟", "sort": 999},
+        token=super_token,
+    )
+    tmp_bar_id = ((res or {}).get("data") or {}).get("id")
+    check("新建临时贴吧成功", status == 200 and bool(tmp_bar_id), str(res)[:200])
+
+    status, res, _ = request(
+        "PUT",
+        f"/api/bars/{tmp_bar_id}",
+        body={
+            "name": f"{tmp_bar_name}改",
+            "icon": "🧪",
+            "image": None,
+            "intro": "简介已改",
+            "owner": "冒烟",
+            "sort": 998,
+        },
+        token=admin_token,
+    )
+    check("编辑贴吧成功（简介已更新）", status == 200 and res["data"].get("desc") == "简介已改", str(res)[:200])
+
+    status, res, _ = request(
+        "PUT",
+        f"/api/bars/{tmp_bar_id}",
+        body={"name": "前端吧", "icon": "💻", "image": None, "intro": "x", "owner": "y", "sort": 1},
+        token=admin_token,
+    )
+    check("改成已存在的吧名被拒（400）", status == 400, str(res)[:200])
+
+    status, res, _ = request("DELETE", f"/api/bars/{tmp_bar_id}", token=admin_token)
+    check("删除贴吧成功", status == 200, str(res)[:200])
+    status, res, _ = request("GET", f"/api/bars/{tmp_bar_id}", token=admin_token)
+    check("删除后该贴吧不可访问（404）", status == 404, str(res)[:200])
+
+    # ---------- 3) 全部评论 / 删除评论（自建评论，测完删掉） ----------
+    status, res, _ = request("GET", "/api/admin/comments?page=1&pageSize=20", token=user_token)
+    check("普通用户访问全部评论被拒（403）", status == 403, str(res)[:200])
+
+    status, res, _ = request("GET", "/api/admin/comments?page=1&pageSize=20", token=admin_token)
+    cdata = (res or {}).get("data") or {}
+    cfirst = (cdata.get("list") or [{}])[0]
+    check(
+        "全部评论列表可读且含所属帖子标题",
+        status == 200 and cdata.get("total", 0) >= 1 and {"postTitle", "text", "author"} <= set(cfirst),
+        str(res)[:200],
+    )
+
+    status, res, _ = request("GET", "/api/posts?page=1&pageSize=1")
+    target = (res or {}).get("data", {}).get("list", [{}])[0]
+    post_id, before_count = target.get("id"), target.get("commentCount")
+
+    status, res, _ = request(
+        "POST", f"/api/posts/{post_id}/comments", body={"text": "冒烟删除用评论"}, token=user_token
+    )
+    tmp_comment_id = ((res or {}).get("data") or {}).get("id")
+    check("临时评论创建成功", status == 200 and bool(tmp_comment_id), str(res)[:200])
+
+    status, res, _ = request("GET", f"/api/posts/{post_id}")
+    check(
+        "发表后帖子评论数 +1",
+        status == 200 and res["data"]["commentCount"] == before_count + 1,
+        str(res)[:200],
+    )
+
+    status, res, _ = request("DELETE", f"/api/comments/{tmp_comment_id}", token=admin_token)
+    check("删除评论成功（软删除 status=0）", status == 200 and res["data"]["status"] == 0, str(res)[:200])
+
+    status, res, _ = request("GET", f"/api/posts/{post_id}")
+    check("删除后帖子评论数复原", status == 200 and res["data"]["commentCount"] == before_count, str(res)[:200])
+
+    status, res, _ = request("DELETE", f"/api/comments/{tmp_comment_id}", token=admin_token)
+    check("重复删除幂等（仍返回成功）", status == 200, str(res)[:200])
+
+
+# ---------------------------------------------------------------------------
 # 主流程
 # ---------------------------------------------------------------------------
 def main() -> int:
@@ -506,6 +658,8 @@ def main() -> int:
             run_api_checks()
             print("  --- 高级管理员 / 管理员账号管理 ---")
             run_super_admin_checks()
+            print("  --- 后台管理补全（用户管理 / 贴吧编辑删除 / 全部评论） ---")
+            run_admin_backfill_checks()
         else:
             print("      提示：数据库不可用时业务接口返回 503，message 里带 MySQL 报错；")
             print("            先 net start MySQL 并导入 sql/bbs_schema.sql，再重跑本脚本。")

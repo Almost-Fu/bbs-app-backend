@@ -1570,7 +1570,237 @@ def unlike_comment(comment_id: int, user: dict = Depends(get_current_user)):
 
 
 # =============================================================================
-# 15. 启动入口
+# 15. 接口：后台管理补全（用户管理 / 贴吧编辑与删除 / 全部评论与删除评论）
+#     这是给 bbs-admin-web 补的最后 7 个接口（前端契约早已按约定写好，后端补齐即生效）：
+#       · 用户管理页   → GET /api/admin/users、GET /api/admin/users/{id}、PATCH .../status
+#       · 贴吧板块页   → PUT /api/bars/{id}、DELETE /api/bars/{id}
+#       · 评论管理页   → GET /api/admin/comments、DELETE /api/comments/{id}
+#     权限：require_admin（普通管理员与高级管理员都可调用；只有「管理员账号管理」限 super_admin）
+# =============================================================================
+
+# ------------------------------- 用户管理 -------------------------------
+USER_SELECT_SQL = """
+SELECT u.id, u.username, u.nickname, u.avatar, u.role, u.status, u.created_at,
+       (SELECT COUNT(*) FROM posts    p WHERE p.user_id = u.id AND p.status = 1) AS post_count,
+       (SELECT COUNT(*) FROM comments c WHERE c.user_id = u.id AND c.status = 1) AS comment_count
+  FROM users u
+"""
+
+
+def user_to_dict(row: dict) -> dict:
+    """用户行 → 后台「用户管理」页所需字段（camelCase，与前端 src/api/user.js 契约一致）"""
+    return {
+        "id": row["id"],
+        "username": row["username"],
+        "nickname": row["nickname"],
+        "avatar": row["avatar"],
+        "role": row["role"],
+        "roleText": ROLE_TEXT.get(row["role"], row["role"]),
+        "status": row["status"],
+        "statusText": "正常" if row["status"] == 1 else "已禁用",
+        "createdAt": iso(row["created_at"]),
+        "postCount": row["post_count"],
+        "commentCount": row["comment_count"],
+    }
+
+
+def get_user_row_or_404(user_id: int) -> dict:
+    row = query_one(USER_SELECT_SQL + " WHERE u.id = %s", (user_id,))
+    if not row:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    return row
+
+
+@app.get("/api/admin/users", tags=["用户管理"], summary="用户列表（分页 + 关键字 / 角色 / 状态筛选）")
+def list_users(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=50, alias="pageSize"),
+    keyword: Optional[str] = Query(None, description="用户名 / 昵称模糊搜索"),
+    role: Optional[str] = Query(None, description="按角色筛选：user / admin / super_admin"),
+    status: Optional[int] = Query(None, ge=0, le=1, description="按状态筛选：1 正常 / 0 禁用"),
+    admin: dict = Depends(require_admin),
+):
+    where = ["1 = 1"]
+    params: list = []
+    if keyword and keyword.strip():
+        kw = f"%{keyword.strip()}%"
+        where.append("(u.username LIKE %s OR u.nickname LIKE %s)")
+        params.extend([kw, kw])
+    if role:
+        if role not in (ROLE_USER, ROLE_ADMIN, ROLE_SUPER_ADMIN):
+            raise HTTPException(status_code=400, detail="角色只能是 user / admin / super_admin")
+        where.append("u.role = %s")
+        params.append(role)
+    if status is not None:
+        where.append("u.status = %s")
+        params.append(status)
+
+    where_sql = " WHERE " + " AND ".join(where)
+    page, page_size, offset = normalize_page(page, page_size)
+    total = query_value(f"SELECT COUNT(*) AS c FROM users u{where_sql}", tuple(params), 0)
+    rows = query_all(
+        USER_SELECT_SQL + where_sql + " ORDER BY u.id DESC LIMIT %s OFFSET %s",
+        (*params, page_size, offset),
+    )
+    return ok(page_data([user_to_dict(r) for r in rows], total, page, page_size))
+
+
+@app.get("/api/admin/users/{user_id}", tags=["用户管理"], summary="用户详情")
+def get_user(user_id: int, admin: dict = Depends(require_admin)):
+    return ok(user_to_dict(get_user_row_or_404(user_id)))
+
+
+@app.patch(
+    "/api/admin/users/{user_id}/status",
+    tags=["用户管理"],
+    summary="启用 / 禁用用户（禁用后该账号无法登录 App）",
+)
+def update_user_status(user_id: int, body: AdminStatusIn, admin: dict = Depends(require_admin)):
+    get_user_row_or_404(user_id)
+    if body.status == 0 and admin["id"] == user_id:
+        raise HTTPException(status_code=400, detail="不能禁用自己的账号")
+    execute("UPDATE users SET status = %s WHERE id = %s", (body.status, user_id))
+    status_text = "正常" if body.status == 1 else "已禁用"
+    return ok(
+        {"id": user_id, "status": body.status, "statusText": status_text},
+        message="已启用" if body.status == 1 else "已禁用（该账号将无法登录 App）",
+    )
+
+
+# --------------------------- 贴吧编辑 / 删除 ---------------------------
+@app.put("/api/bars/{bar_id}", tags=["贴吧"], summary="编辑贴吧（管理员）")
+def update_bar(bar_id: int, body: BarIn, admin: dict = Depends(require_admin)):
+    if not query_one("SELECT id FROM bars WHERE id = %s", (bar_id,)):
+        raise HTTPException(status_code=404, detail="贴吧不存在")
+
+    name = body.name.strip()
+    # 吧名唯一：排除自己再查重
+    if query_one("SELECT id FROM bars WHERE name = %s AND id <> %s", (name, bar_id)):
+        raise HTTPException(status_code=400, detail="已存在同名贴吧")
+
+    execute(
+        """UPDATE bars SET name = %s, icon = %s, image = %s, intro = %s, owner = %s, sort = %s
+            WHERE id = %s""",
+        (name, body.icon, body.image, body.intro, body.owner, body.sort, bar_id),
+    )
+    updated = query_one(BAR_SELECT_SQL + " WHERE b.id = %s", (bar_id,))
+    return ok(
+        bar_to_dict(updated, False, updated["post_count"], updated["follow_count"]),
+        message="保存成功",
+    )
+
+
+@app.delete(
+    "/api/bars/{bar_id}",
+    tags=["贴吧"],
+    summary="删除贴吧（管理员；吧内帖子/关注/收藏随外键级联删除）",
+)
+def delete_bar(bar_id: int, admin: dict = Depends(require_admin)):
+    if not query_one("SELECT id FROM bars WHERE id = %s", (bar_id,)):
+        raise HTTPException(status_code=404, detail="贴吧不存在")
+
+    post_count = query_value("SELECT COUNT(*) AS c FROM posts WHERE bar_id = %s", (bar_id,), 0)
+    # bars 的外键都是 ON DELETE CASCADE：吧内帖子、帖子图片、评论、点赞、收藏、关注会一并删除
+    # （前端「删除贴吧」用的是红色二次确认，已经明确提示过这一点）
+    execute("DELETE FROM bars WHERE id = %s", (bar_id,))
+    return ok(
+        {"id": bar_id, "deletedPosts": post_count},
+        message=f"已删除该贴吧（同时删除 {post_count} 篇帖子）",
+    )
+
+
+# --------------------- 全部评论（跨帖） / 删除评论 ---------------------
+ADMIN_COMMENT_SELECT_SQL = """
+SELECT c.id, c.post_id, c.user_id, c.parent_id, c.content, c.like_count, c.status, c.created_at,
+       u.nickname AS author, u.avatar AS author_avatar,
+       p.title     AS post_title
+  FROM comments c
+  JOIN users u ON u.id = c.user_id
+  JOIN posts p ON p.id = c.post_id
+"""
+
+
+def admin_comment_to_dict(row: dict) -> dict:
+    """评论行 → 后台「评论管理」页所需字段（含所属帖子标题）"""
+    return {
+        "id": row["id"],
+        "postId": row["post_id"],
+        "postTitle": row["post_title"],
+        "author": row["author"],
+        "authorId": row["user_id"],
+        "authorAvatar": row["author_avatar"],
+        "text": row["content"],
+        "likes": row["like_count"],
+        "status": row["status"],
+        "time": fmt_time(row["created_at"]),
+        "createdAt": iso(row["created_at"]),
+        "parentId": row["parent_id"],
+    }
+
+
+@app.get("/api/admin/comments", tags=["评论管理"], summary="全部评论（分页 + 关键字 / 帖子筛选）")
+def list_all_comments(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=50, alias="pageSize"),
+    keyword: Optional[str] = Query(None, description="评论内容 / 作者模糊搜索"),
+    post_id: Optional[int] = Query(None, alias="postId", description="只看某个帖子的评论"),
+    status: Optional[int] = Query(None, ge=0, le=1, description="1 正常 / 0 已删除"),
+    admin: dict = Depends(require_admin),
+):
+    where = ["1 = 1"]
+    params: list = []
+    if keyword and keyword.strip():
+        kw = f"%{keyword.strip()}%"
+        where.append("(c.content LIKE %s OR u.nickname LIKE %s)")
+        params.extend([kw, kw])
+    if post_id:
+        where.append("c.post_id = %s")
+        params.append(post_id)
+    if status is not None:
+        where.append("c.status = %s")
+        params.append(status)
+
+    where_sql = " WHERE " + " AND ".join(where)
+    page, page_size, offset = normalize_page(page, page_size)
+    total = query_value(
+        f"""SELECT COUNT(*) AS c FROM comments c
+              JOIN users u ON u.id = c.user_id
+              JOIN posts p ON p.id = c.post_id{where_sql}""",
+        tuple(params),
+        0,
+    )
+    rows = query_all(
+        ADMIN_COMMENT_SELECT_SQL + where_sql + " ORDER BY c.id DESC LIMIT %s OFFSET %s",
+        (*params, page_size, offset),
+    )
+    return ok(page_data([admin_comment_to_dict(r) for r in rows], total, page, page_size))
+
+
+@app.delete(
+    "/api/comments/{comment_id}",
+    tags=["评论管理"],
+    summary="删除违规评论（软删除，同时把该帖评论数 -1）",
+)
+def delete_comment(comment_id: int, admin: dict = Depends(require_admin)):
+    row = query_one("SELECT id, post_id, status FROM comments WHERE id = %s", (comment_id,))
+    if not row:
+        raise HTTPException(status_code=404, detail="评论不存在")
+    if row["status"] == 0:
+        return ok({"id": comment_id, "status": 0}, message="该评论已是删除状态")
+
+    # 软删除（保留数据便于追溯）+ 同步帖子评论数，放同一事务
+    with transaction() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE comments SET status = 0 WHERE id = %s", (comment_id,))
+            cur.execute(
+                "UPDATE posts SET comment_count = GREATEST(comment_count - 1, 0) WHERE id = %s",
+                (row["post_id"],),
+            )
+    return ok({"id": comment_id, "status": 0}, message="已删除该评论")
+
+
+# =============================================================================
+# 16. 启动入口
 #     本地开发：python main.py（自动热重载，端口取 PORT 或 8000）
 #     云端部署（Render）：Start Command 用
 #         uvicorn main:app --host 0.0.0.0 --port $PORT
