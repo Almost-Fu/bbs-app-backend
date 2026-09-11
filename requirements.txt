@@ -6,3 +6,6 @@ pymysql>=1.1
 PyJWT>=2.8
 python-multipart>=0.0.9
 python-dotenv>=1.0
+# MySQL 8.4 / 云数据库(Aiven)默认使用 caching_sha2_password 认证：
+# 走 TLS(DB_SSL=true)时不需要它；万一没开 TLS，pymysql 需要 cryptography 才能完成 RSA 密钥交换。
+cryptography>=42.0
